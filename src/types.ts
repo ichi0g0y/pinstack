@@ -6,6 +6,7 @@ export type PinnedGroup = {
   items: PinnedItem[];
   createdAt: number;
   updatedAt: number;
+  order?: number;
 };
 
 export type SyncStateV1 = {

@@ -20,6 +20,7 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
 function isPinnedGroup(value: unknown): value is PinnedGroup {
   if (!value || typeof value !== "object") return false;
   const group = value as PinnedGroup;
+  if ("order" in group && typeof group.order !== "number") return false;
   return (
     typeof group.id === "string" &&
     typeof group.name === "string" &&
@@ -40,6 +41,7 @@ function normalizeSyncState(raw: unknown): SyncStateV1 {
     .filter(isPinnedGroup)
     .map((group) => ({
       ...group,
+      order: typeof group.order === "number" ? group.order : undefined,
       items: Array.isArray(group.items)
         ? group.items.filter((item) => item && typeof item.url === "string" && item.url.trim())
         : [],
@@ -103,27 +105,63 @@ export async function ensureDefaultGroup(): Promise<SyncStateV1> {
     typeof state.defaultGroupId === "string" &&
     state.groups.some((group) => group.id === state.defaultGroupId);
 
-  if (hasDefault) {
-    return state;
+  let nextState = state;
+  let needsWrite = false;
+  const orderAssignments = new Map<string, number>();
+
+  if (!hasDefault) {
+    const now = Date.now();
+    const defaultGroup: PinnedGroup = {
+      id: generateId(),
+      name: "",
+      items: [],
+      createdAt: now,
+      updatedAt: now,
+      order: 0,
+    };
+
+    nextState = {
+      version: 1,
+      groups: [...state.groups, defaultGroup],
+      defaultGroupId: defaultGroup.id,
+    };
+    needsWrite = true;
   }
 
-  const now = Date.now();
-  const defaultGroup: PinnedGroup = {
-    id: generateId(),
-    name: "",
-    items: [],
-    createdAt: now,
-    updatedAt: now,
-  };
+  const groups = nextState.groups;
+  const orderedGroups = groups.filter((group) => typeof group.order === "number");
+  if (orderedGroups.length !== groups.length) {
+    if (orderedGroups.length === 0) {
+      const sorted = [...groups].sort((a, b) => b.createdAt - a.createdAt);
+      sorted.forEach((group, index) => {
+        orderAssignments.set(group.id, index);
+      });
+    } else {
+      let maxOrder = Math.max(...orderedGroups.map((group) => group.order as number));
+      for (const group of groups) {
+        if (typeof group.order === "number") continue;
+        maxOrder += 1;
+        orderAssignments.set(group.id, maxOrder);
+      }
+    }
+  }
 
-  const nextState: SyncStateV1 = {
-    version: 1,
-    groups: [...state.groups, defaultGroup],
-    defaultGroupId: defaultGroup.id,
-  };
+  if (orderAssignments.size > 0) {
+    nextState = {
+      ...nextState,
+      groups: nextState.groups.map((group) => {
+        const order = orderAssignments.get(group.id);
+        if (order === undefined) return group;
+        return { ...group, order };
+      }),
+    };
+    needsWrite = true;
+  }
 
-  await markLocalWrite();
-  await setSyncState(nextState);
+  if (needsWrite) {
+    await markLocalWrite();
+    await setSyncState(nextState);
+  }
   return nextState;
 }
 

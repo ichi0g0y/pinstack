@@ -212,6 +212,15 @@ button.danger {
   animation: cardReveal 0.35s ease both;
 }
 
+.group-card[draggable="true"] {
+  cursor: grab;
+}
+
+.group-card.dragging {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
 .group-header {
   display: flex;
   align-items: center;

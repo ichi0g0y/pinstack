@@ -29,6 +29,7 @@ const groupsListEl = groupsList;
 const emptyStateEl = emptyState;
 const statusElEl = statusEl;
 const syncNoticeEl = syncNotice;
+let draggedGroupId: string | null = null;
 
 function setStatus(message: string, tone: "info" | "error" = "info"): void {
   statusElEl.textContent = message;
@@ -61,6 +62,26 @@ function dedupeItems(items: PinnedItemInput[]): PinnedItemInput[] {
   return result;
 }
 
+function getNextGroupOrder(state: SyncStateV1): number {
+  const orders = state.groups
+    .map((group) => (typeof group.order === "number" ? group.order : -1))
+    .filter((order) => Number.isFinite(order));
+  return (orders.length ? Math.max(...orders) : -1) + 1;
+}
+
+function sortGroups(state: SyncStateV1): PinnedGroup[] {
+  return [...state.groups].sort((a, b) => {
+    const aDefault = a.id === state.defaultGroupId;
+    const bDefault = b.id === state.defaultGroupId;
+    if (aDefault && !bDefault) return -1;
+    if (!aDefault && bDefault) return 1;
+    const orderA = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
+    const orderB = typeof b.order === "number" ? b.order : Number.POSITIVE_INFINITY;
+    if (orderA !== orderB) return orderA - orderB;
+    return b.createdAt - a.createdAt;
+  });
+}
+
 async function clearRemoteNotice(): Promise<void> {
   await updateLocalState({ hasRemoteUpdate: false });
   await chrome.action.setBadgeText({ text: "" });
@@ -86,7 +107,7 @@ async function renderGroups(): Promise<void> {
   if (localState.activeGroupId && localState.activeGroupId !== activeGroupId) {
     await setActiveGroupId(undefined);
   }
-  const groups = [...state.groups].sort((a, b) => b.createdAt - a.createdAt);
+  const groups = sortGroups(state);
 
   groupsListEl.innerHTML = "";
   if (groups.length === 0) {
@@ -115,6 +136,9 @@ function createGroupCard(
 ): HTMLElement {
   const card = document.createElement("article");
   card.className = "group-card";
+  card.dataset.id = group.id;
+  card.dataset.default = isDefault ? "true" : "false";
+  card.draggable = !isDefault;
 
   const header = document.createElement("div");
   header.className = "group-header";
@@ -254,6 +278,7 @@ async function saveGroupFromPinnedTabs(): Promise<void> {
     items,
     createdAt: now,
     updatedAt: now,
+    order: getNextGroupOrder(state),
   };
 
   const nextState: SyncStateV1 = {
@@ -319,6 +344,42 @@ async function setActiveGroup(groupId: string): Promise<void> {
   await renderGroups();
 }
 
+async function persistGroupOrder(): Promise<void> {
+  const state = await ensureDefaultGroup();
+  const cards = Array.from(groupsListEl.querySelectorAll<HTMLElement>(".group-card"));
+  const orderedIds = cards
+    .map((card) => ({
+      id: card.dataset.id,
+      isDefault: card.dataset.default === "true",
+    }))
+    .filter((item) => item.id && !item.isDefault)
+    .map((item) => item.id as string);
+
+  if (orderedIds.length === 0) return;
+
+  const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
+  let changed = false;
+  const nextGroups = state.groups.map((group) => {
+    if (group.id === state.defaultGroupId) return group;
+    const order = orderMap.get(group.id);
+    if (order === undefined || group.order === order) return group;
+    changed = true;
+    return { ...group, order };
+  });
+
+  if (!changed) return;
+
+  const nextState: SyncStateV1 = {
+    ...state,
+    groups: nextGroups,
+  };
+
+  await markLocalWrite();
+  await setSyncState(nextState);
+  await clearRemoteNotice();
+  await renderGroups();
+}
+
 groupsListEl.addEventListener("click", (event) => {
   const target = event.target as HTMLElement;
   if (!target.dataset.action || !target.dataset.id) return;
@@ -334,6 +395,42 @@ groupsListEl.addEventListener("click", (event) => {
   if (target.dataset.action === "delete") {
     void deleteGroup(target.dataset.id);
   }
+});
+
+groupsListEl.addEventListener("dragstart", (event) => {
+  const target = event.target as HTMLElement;
+  if (target.closest("button")) return;
+  const card = target.closest<HTMLElement>(".group-card");
+  if (!card || card.dataset.default === "true") return;
+  draggedGroupId = card.dataset.id ?? null;
+  if (!draggedGroupId) return;
+  card.classList.add("dragging");
+  event.dataTransfer?.setData("text/plain", draggedGroupId);
+  event.dataTransfer?.setDragImage(card, 20, 20);
+});
+
+groupsListEl.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  const target = event.target as HTMLElement;
+  const card = target.closest<HTMLElement>(".group-card");
+  const dragging = groupsListEl.querySelector<HTMLElement>(".group-card.dragging");
+  if (!card || !dragging || card === dragging) return;
+  if (card.dataset.default === "true") return;
+  const rect = card.getBoundingClientRect();
+  const shouldInsertAfter = event.clientY > rect.top + rect.height / 2;
+  groupsListEl.insertBefore(dragging, shouldInsertAfter ? card.nextSibling : card);
+});
+
+groupsListEl.addEventListener("drop", (event) => {
+  event.preventDefault();
+  if (!draggedGroupId) return;
+  void persistGroupOrder();
+});
+
+groupsListEl.addEventListener("dragend", () => {
+  const dragging = groupsListEl.querySelector<HTMLElement>(".group-card.dragging");
+  if (dragging) dragging.classList.remove("dragging");
+  draggedGroupId = null;
 });
 
 saveButtonEl.addEventListener("click", () => {
