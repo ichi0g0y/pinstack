@@ -168,10 +168,13 @@ async function resolveSyncGroupId(state: SyncStateV1): Promise<string | undefine
   return state.defaultGroupId;
 }
 
-async function updateGroupItems(groupId: string, items: PinnedItem[]): Promise<boolean> {
+async function updateGroupItems(
+  groupId: string,
+  items: PinnedItem[]
+): Promise<{ changed: boolean; previousItems: PinnedItem[] }> {
   const state = await ensureDefaultGroup();
   const target = state.groups.find((group) => group.id === groupId);
-  if (!target) return false;
+  if (!target) return { changed: false, previousItems: [] };
 
   const same =
     target.items.length === items.length &&
@@ -180,7 +183,7 @@ async function updateGroupItems(groupId: string, items: PinnedItem[]): Promise<b
       return item.url === candidate?.url && item.title === candidate?.title;
     });
 
-  if (same) return false;
+  if (same) return { changed: false, previousItems: target.items };
 
   const now = Date.now();
   const nextGroups = state.groups.map((group) =>
@@ -200,14 +203,15 @@ async function updateGroupItems(groupId: string, items: PinnedItem[]): Promise<b
 
   await markLocalWrite();
   await setSyncState(nextState);
-  return true;
+  return { changed: true, previousItems: target.items };
 }
 
 async function applyGroupToWindow(
   windowId: number,
   items: PinnedItem[],
-  mode: "exact" | "additive" = "exact"
+  options: { mode?: "exact" | "additive"; removedUrls?: Set<string> } = {}
 ): Promise<void> {
+  const mode = options.mode ?? "exact";
   const tabs = await queryTabs({ windowId });
   const pinnedTabs = tabs.filter((tab) => tab.pinned);
   const unpinnedTabs = tabs.filter((tab) => !tab.pinned);
@@ -274,12 +278,20 @@ async function applyGroupToWindow(
     for (let i = 0; i < orderedTabIds.length; i += 1) {
       await moveTab(orderedTabIds[i], i);
     }
+  } else if (options.removedUrls && options.removedUrls.size > 0) {
+    for (const tab of pinnedTabs) {
+      const url = normalizeUrl(tab);
+      if (!url || !options.removedUrls.has(url)) continue;
+      if (tab.id === undefined) continue;
+      await removeTab(tab.id);
+      pinnedTabIds.delete(tab.id);
+    }
   }
 }
 
 async function applyGroupToAllWindows(
   items: PinnedItem[],
-  options: { sourceWindowId?: number } = {}
+  options: { sourceWindowId?: number; removedUrls?: Set<string> } = {}
 ): Promise<void> {
   if (isApplyingGroup) return;
   isApplyingGroup = true;
@@ -288,7 +300,7 @@ async function applyGroupToAllWindows(
     for (const window of windows) {
       if (typeof window.id !== "number") continue;
       const mode = window.id === options.sourceWindowId ? "exact" : "additive";
-      await applyGroupToWindow(window.id, items, mode);
+      await applyGroupToWindow(window.id, items, { mode, removedUrls: options.removedUrls });
     }
   } finally {
     isApplyingGroup = false;
@@ -307,9 +319,14 @@ async function syncPinnedTabsFromWindow(
 
   const items = await getPinnedItems({ windowId, pinned: true });
   if (items.length === 0 && !options.allowEmpty) return;
-  const changed = await updateGroupItems(groupId, items);
-  if (changed) {
-    await applyGroupToAllWindows(items, { sourceWindowId: windowId });
+  const result = await updateGroupItems(groupId, items);
+  if (result.changed) {
+    const removedUrls = new Set(
+      result.previousItems
+        .filter((item) => !items.some((current) => current.url === item.url))
+        .map((item) => item.url)
+    );
+    await applyGroupToAllWindows(items, { sourceWindowId: windowId, removedUrls });
   }
 }
 
@@ -463,7 +480,10 @@ chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: TabChangeInfo, tab
 
 chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => {
   if (isApplyingGroup) return;
-  if (!pinnedTabIds.has(tabId)) return;
+  if (removeInfo.isWindowClosing) {
+    pinnedTabIds.delete(tabId);
+    return;
+  }
   pinnedTabIds.delete(tabId);
   void syncPinnedTabsFromWindow(removeInfo.windowId, { allowEmpty: true });
 });
@@ -502,7 +522,7 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
     const groupId = await resolveSyncGroupId(state);
     const group = state.groups.find((candidate) => candidate.id === groupId);
     if (group) {
-      await applyGroupToAllWindows(group.items);
+      await applyGroupToAllWindows(group.items, { removedUrls: new Set() });
     }
   })();
 });
