@@ -9,17 +9,22 @@ const faviconEl = document.querySelector<HTMLImageElement>("#favicon");
 const openButton = document.querySelector<HTMLButtonElement>("#openNow");
 const faviconLink = document.querySelector<HTMLLinkElement>("#faviconLink");
 
-if (titleEl) {
-  let fallback = "Pinned tab";
-  if (target) {
-    try {
-      fallback = new URL(target).hostname;
-    } catch {
-      fallback = target;
-    }
+let displayTitle = "Pinned tab";
+if (target) {
+  try {
+    displayTitle = new URL(target).hostname;
+  } catch {
+    displayTitle = target;
   }
-  titleEl.textContent = title || fallback;
 }
+if (title) {
+  displayTitle = title;
+}
+
+if (titleEl) {
+  titleEl.textContent = displayTitle;
+}
+document.title = displayTitle;
 
 if (urlEl) {
   urlEl.textContent = target;

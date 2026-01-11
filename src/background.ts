@@ -23,9 +23,9 @@ type TabInfo = {
   index?: number;
 };
 type TabChangeInfo = { pinned?: boolean };
-type TabsQuery = { windowId?: number; currentWindow?: boolean; pinned?: boolean };
+type TabsQuery = { windowId?: number; currentWindow?: boolean; pinned?: boolean; active?: boolean };
 type TabCreate = { windowId?: number; url?: string; pinned?: boolean; index?: number; active?: boolean };
-type TabUpdate = { pinned?: boolean; url?: string };
+type TabUpdate = { pinned?: boolean; url?: string; active?: boolean };
 type WindowInfo = { id?: number; type?: string };
 type TabRemoveInfo = { windowId: number; isWindowClosing?: boolean };
 type TabMoveInfo = { windowId: number; fromIndex: number; toIndex: number };
@@ -363,6 +363,7 @@ async function applyGroupToAllWindows(
     const windows = await getAllWindows();
     for (const window of windows) {
       if (typeof window.id !== "number") continue;
+      if (pendingWindowSync.has(window.id)) continue;
       const mode = window.id === options.sourceWindowId ? "exact" : "additive";
       await applyGroupToWindow(window.id, items, { mode, removedUrls: options.removedUrls });
     }
@@ -426,7 +427,10 @@ async function initializeSyncState(): Promise<void> {
   await seedPinnedTabIds();
 }
 
-async function maybeRestoreDefaultGroup(windowId: number | undefined): Promise<void> {
+async function maybeRestoreDefaultGroup(
+  windowId: number | undefined,
+  state?: SyncStateV1
+): Promise<void> {
   if (!windowId) return;
   const [tabs, pinnedTabs] = await Promise.all([
     queryTabs({ windowId }),
@@ -435,8 +439,8 @@ async function maybeRestoreDefaultGroup(windowId: number | undefined): Promise<v
 
   if (pinnedTabs.length > 0) return;
 
-  const state = await ensureDefaultGroup();
-  const group = state.groups.find((candidate) => candidate.id === state.defaultGroupId);
+  const nextState = state ?? (await ensureDefaultGroup());
+  const group = nextState.groups.find((candidate) => candidate.id === nextState.defaultGroupId);
   if (!group || group.items.length === 0) return;
 
   await createPinnedTabs(windowId, group.items);
@@ -449,7 +453,11 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
   const items = await getPinnedItems({ windowId, pinned: true });
 
   if (items.length === 0) {
-    await maybeRestoreDefaultGroup(windowId);
+    const state = await ensureDefaultGroup();
+    if (state.defaultGroupId) {
+      await setActiveGroupId(state.defaultGroupId);
+    }
+    await maybeRestoreDefaultGroup(windowId, state);
     return;
   }
 
@@ -546,6 +554,19 @@ chrome.tabs.onActivated.addListener((activeInfo: TabActivatedInfo) => {
     const suspended = parseSuspendedUrl(tab.url);
     if (!suspended?.targetUrl) return;
     await updateTab(activeInfo.tabId, { url: suspended.targetUrl });
+  })();
+});
+
+chrome.commands.onCommand.addListener((command: string) => {
+  if (command !== "suspend-pinned-tab") return;
+  void (async () => {
+    const tabs = await queryTabs({ active: true, currentWindow: true });
+    const tab = tabs[0];
+    if (!tab?.id || !tab.pinned) return;
+    if (tab.url && tab.url.startsWith(SUSPENDED_PAGE)) return;
+    const item = tabToItem(tab);
+    if (!item) return;
+    await updateTab(tab.id, { url: buildSuspendedUrl(item) });
   })();
 });
 
