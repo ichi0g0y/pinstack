@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pinstack</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Pinned tabs, everywhere</p>
+          <h1>Pinstack</h1>
+          <p class="subhead">Save your pinned tabs as named stacks and restore them the moment a new window opens.</p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <label class="field" for="groupName">
+          <span>Group name</span>
+          <input id="groupName" type="text" placeholder="Morning focus" autocomplete="off" />
+        </label>
+        <button id="saveGroup" class="primary" type="button">Save pinned tabs</button>
+        <p id="status" class="status" hidden></p>
+        <p class="helper">Only pinned tabs from the current window are saved.</p>
+      </section>
+
+      <section id="syncNotice" class="notice" hidden>
+        New synced changes detected from another device. Review the latest groups before restoring.
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Saved groups</h2>
+          <p id="emptyState">No groups yet. Pin tabs and save your first stack.</p>
+        </div>
+        <div id="groupsList" class="groups" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

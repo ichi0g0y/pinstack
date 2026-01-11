@@ -1,0 +1,269 @@
+:root {
+  color-scheme: light;
+  --bg: #f7f1e6;
+  --bg-2: #f0dcc4;
+  --card: #fffaf1;
+  --ink: #1b1a16;
+  --muted: #6b5c4f;
+  --accent: #d56b2f;
+  --accent-dark: #a94c1c;
+  --outline: #e2d4c0;
+  --danger: #b33f2c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: radial-gradient(circle at top left, #fff4e0 0%, var(--bg) 40%, var(--bg-2) 100%);
+  color: var(--ink);
+  font-family: "Georgia", "Palatino", "Times New Roman", serif;
+}
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: auto;
+  width: 160px;
+  height: 160px;
+  border-radius: 32px;
+  background: rgba(213, 107, 47, 0.12);
+  filter: blur(0px);
+  z-index: 0;
+}
+
+body::before {
+  top: -40px;
+  right: -60px;
+  transform: rotate(12deg);
+}
+
+body::after {
+  bottom: -50px;
+  left: -40px;
+  background: rgba(27, 26, 22, 0.08);
+  transform: rotate(-8deg);
+}
+
+.app {
+  position: relative;
+  z-index: 1;
+  padding: 16px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.hero {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 6px 4px 0;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 10px;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+
+.hero h1 {
+  font-size: 24px;
+  margin: 0 0 4px;
+  letter-spacing: 0.02em;
+}
+
+.subhead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--outline);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 10px 24px rgba(33, 25, 15, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: panelRise 0.35s ease both;
+}
+
+.panel-title {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+input {
+  border: 1px solid var(--outline);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+
+input:focus {
+  outline: 2px solid rgba(213, 107, 47, 0.35);
+  border-color: var(--accent);
+}
+
+button {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fffaf1;
+  box-shadow: 0 8px 18px rgba(213, 107, 47, 0.25);
+}
+
+button.primary:hover {
+  background: var(--accent-dark);
+}
+
+button.danger {
+  background: rgba(179, 63, 44, 0.12);
+  color: var(--danger);
+}
+
+.status {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status[data-tone="error"] {
+  color: var(--danger);
+}
+
+.helper {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.notice {
+  border-radius: 14px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(213, 107, 47, 0.6);
+  background: rgba(213, 107, 47, 0.08);
+  font-size: 12px;
+  color: var(--accent-dark);
+  line-height: 1.4;
+  animation: panelRise 0.35s ease both;
+}
+
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.group-card {
+  border: 1px solid var(--outline);
+  border-radius: 14px;
+  padding: 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: cardReveal 0.35s ease both;
+}
+
+.group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.group-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.badge {
+  background: rgba(27, 26, 22, 0.08);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.group-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.group-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@keyframes panelRise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cardReveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

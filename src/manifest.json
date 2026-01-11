@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Pinstack",
+  "description": "Save and restore pinned tab groups across your devices.",
+  "version": "0.1.0",
+  "permissions": ["tabs", "storage"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Pinstack",
+    "default_popup": "popup.html"
+  }
+}
