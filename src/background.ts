@@ -440,11 +440,6 @@ async function maybeRestoreDefaultGroup(windowId: number | undefined): Promise<v
   if (!group || group.items.length === 0) return;
 
   await createPinnedTabs(windowId, group.items);
-
-  const blankTab = tabs.find((tab) => isBlankNewTab(tab));
-  if (blankTab?.id !== undefined) {
-    await removeTab(blankTab.id);
-  }
 }
 
 async function handleWindowState(windowId: number | undefined): Promise<void> {
