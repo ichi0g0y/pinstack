@@ -219,6 +219,12 @@ button.danger {
   gap: 8px;
 }
 
+.badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .group-header h3 {
   margin: 0;
   font-size: 15px;
@@ -232,6 +238,11 @@ button.danger {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
+}
+
+.badge-accent {
+  background: rgba(213, 107, 47, 0.18);
+  color: var(--accent-dark);
 }
 
 .group-meta {

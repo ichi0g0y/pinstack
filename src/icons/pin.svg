@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+  <style>
+    .pin {
+      stroke: #1b1a16;
+    }
+    @media (prefers-color-scheme: dark) {
+      .pin {
+        stroke: #f7f1e6;
+      }
+    }
+  </style>
+  <g class="pin" fill="none" stroke="#1b1a16" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8.5 7H15.5" />
+    <path d="M8.5 7L6.8 12.3L4.7 14H19.3L17.2 12.3L15.5 7" />
+    <path d="M12 14V18.5" />
+  </g>
+</svg>

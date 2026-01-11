@@ -18,4 +18,5 @@ export type LocalStateV1 = {
   version: 1;
   lastLocalWriteAt: number;
   hasRemoteUpdate: boolean;
+  activeGroupId?: string;
 };

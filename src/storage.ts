@@ -1,4 +1,5 @@
 import type { LocalStateV1, PinnedGroup, SyncStateV1 } from "./types.js";
+import { nanoid } from "./id.js";
 
 export const SYNC_KEY = "pinstack_sync_state_v1";
 export const LOCAL_KEY = "pinstack_local_state_v1";
@@ -13,6 +14,7 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
   version: 1,
   lastLocalWriteAt: 0,
   hasRemoteUpdate: false,
+  activeGroupId: undefined,
 };
 
 function isPinnedGroup(value: unknown): value is PinnedGroup {
@@ -58,14 +60,12 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
     version: 1,
     lastLocalWriteAt: typeof candidate.lastLocalWriteAt === "number" ? candidate.lastLocalWriteAt : 0,
     hasRemoteUpdate: Boolean(candidate.hasRemoteUpdate),
+    activeGroupId: typeof candidate.activeGroupId === "string" ? candidate.activeGroupId : undefined,
   };
 }
 
 export function generateId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `pinstack-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`;
+  return nanoid();
 }
 
 export async function getSyncState(): Promise<SyncStateV1> {
@@ -91,6 +91,40 @@ export async function updateLocalState(partial: Partial<LocalStateV1>): Promise<
   const next: LocalStateV1 = { ...current, ...partial, version: 1 };
   await setLocalState(next);
   return next;
+}
+
+export async function setActiveGroupId(groupId?: string): Promise<LocalStateV1> {
+  return updateLocalState({ activeGroupId: groupId });
+}
+
+export async function ensureDefaultGroup(): Promise<SyncStateV1> {
+  const state = await getSyncState();
+  const hasDefault =
+    typeof state.defaultGroupId === "string" &&
+    state.groups.some((group) => group.id === state.defaultGroupId);
+
+  if (hasDefault) {
+    return state;
+  }
+
+  const now = Date.now();
+  const defaultGroup: PinnedGroup = {
+    id: generateId(),
+    name: "",
+    items: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const nextState: SyncStateV1 = {
+    version: 1,
+    groups: [...state.groups, defaultGroup],
+    defaultGroupId: defaultGroup.id,
+  };
+
+  await markLocalWrite();
+  await setSyncState(nextState);
+  return nextState;
 }
 
 export async function markLocalWrite(): Promise<void> {

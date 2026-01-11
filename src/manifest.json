@@ -4,12 +4,19 @@
   "description": "Save and restore pinned tab groups across your devices.",
   "version": "0.1.0",
   "permissions": ["tabs", "storage"],
+  "icons": {
+    "16": "icons/pin.svg",
+    "32": "icons/pin.svg",
+    "48": "icons/pin.svg",
+    "128": "icons/pin.svg"
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
   "action": {
     "default_title": "Pinstack",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": "icons/pin.svg"
   }
 }
