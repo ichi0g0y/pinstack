@@ -4,6 +4,9 @@
   "description": "Save and restore pinned tab groups across your devices.",
   "version": "0.1.0",
   "permissions": ["tabs", "storage"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:;"
+  },
   "icons": {
     "16": "icons/pin.svg",
     "32": "icons/pin.svg",

@@ -1,4 +1,4 @@
-export type PinnedItem = { url: string; title?: string };
+export type PinnedItem = { url: string; title?: string; faviconUrl?: string };
 
 export type PinnedGroup = {
   id: string;

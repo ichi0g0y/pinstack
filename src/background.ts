@@ -17,6 +17,7 @@ type TabInfo = {
   url?: string;
   pendingUrl?: string;
   title?: string;
+  favIconUrl?: string;
   pinned?: boolean;
   windowId?: number;
   index?: number;
@@ -24,16 +25,18 @@ type TabInfo = {
 type TabChangeInfo = { pinned?: boolean };
 type TabsQuery = { windowId?: number; currentWindow?: boolean; pinned?: boolean };
 type TabCreate = { windowId?: number; url?: string; pinned?: boolean; index?: number; active?: boolean };
-type TabUpdate = { pinned?: boolean };
+type TabUpdate = { pinned?: boolean; url?: string };
 type WindowInfo = { id?: number; type?: string };
 type TabRemoveInfo = { windowId: number; isWindowClosing?: boolean };
 type TabMoveInfo = { windowId: number; fromIndex: number; toIndex: number };
 type TabDetachInfo = { oldWindowId: number; oldPosition: number };
 type TabAttachInfo = { newWindowId: number; newPosition: number };
+type TabActivatedInfo = { tabId: number; windowId: number };
 
 const pinnedTabIds = new Set<number>();
 let isApplyingGroup = false;
 const pendingWindowSync = new Set<number>();
+const SUSPENDED_PAGE = chrome.runtime.getURL("suspended.html");
 
 function queryTabs(queryInfo: TabsQuery): Promise<TabInfo[]> {
   return new Promise((resolve) => {
@@ -81,6 +84,8 @@ function normalizeUrl(tab: TabInfo | undefined): string | undefined {
   if (!tab) return undefined;
   const url = tab.pendingUrl ?? tab.url ?? "";
   if (!url || url === "about:blank" || url.startsWith("chrome://newtab")) return undefined;
+  const suspended = parseSuspendedUrl(url);
+  if (suspended?.targetUrl) return suspended.targetUrl;
   return url;
 }
 
@@ -90,18 +95,72 @@ function isBlankNewTab(tab: TabInfo | undefined): boolean {
   return url === "about:blank" || url.startsWith("chrome://newtab");
 }
 
+function parseSuspendedUrl(rawUrl: string): { targetUrl?: string; title?: string; faviconUrl?: string } | null {
+  if (!rawUrl.startsWith(SUSPENDED_PAGE)) return null;
+  try {
+    const url = new URL(rawUrl);
+    const targetUrl = url.searchParams.get("target") ?? undefined;
+    const title = url.searchParams.get("title") ?? undefined;
+    const faviconUrl = url.searchParams.get("favicon") ?? undefined;
+    return { targetUrl, title, faviconUrl };
+  } catch {
+    return null;
+  }
+}
+
+function isHttpUrl(value: string | undefined): boolean {
+  return Boolean(value && /^https?:\/\//.test(value));
+}
+
+function buildFaviconFallback(targetUrl: string): string | undefined {
+  if (!isHttpUrl(targetUrl)) return undefined;
+  const url = new URL("https://www.google.com/s2/favicons");
+  url.searchParams.set("sz", "64");
+  url.searchParams.set("domain_url", targetUrl);
+  return url.toString();
+}
+
+function normalizeFaviconUrl(input: string | undefined, targetUrl: string): string | undefined {
+  if (input && (input.startsWith("data:") || input.startsWith("http://") || input.startsWith("https://"))) {
+    return input;
+  }
+  return buildFaviconFallback(targetUrl);
+}
+
+function buildSuspendedUrl(item: PinnedItem): string {
+  const url = new URL(SUSPENDED_PAGE);
+  url.searchParams.set("target", item.url);
+  if (item.title) url.searchParams.set("title", item.title);
+  const normalizedFavicon = normalizeFaviconUrl(item.faviconUrl, item.url);
+  if (normalizedFavicon) url.searchParams.set("favicon", normalizedFavicon);
+  return url.toString();
+}
+
 async function createPinnedTabs(windowId: number, items: PinnedItem[]): Promise<void> {
   for (let i = 0; i < items.length; i += 1) {
     const item = items[i];
-    await createTab({ windowId, url: item.url, pinned: true, index: i });
+    const created = await createTab({
+      windowId,
+      url: buildSuspendedUrl(item),
+      pinned: true,
+      index: i,
+      active: false,
+    });
+    if (typeof created.id === "number") {
+      pinnedTabIds.add(created.id);
+    }
   }
 }
 
 function tabToItem(tab: TabInfo): PinnedItem | null {
   const url = normalizeUrl(tab);
   if (!url) return null;
-  const item: PinnedItem = { url };
-  if (tab.title) item.title = tab.title;
+  const suspended = tab.url ? parseSuspendedUrl(tab.url) : null;
+  const item: PinnedItem = {
+    url,
+    title: suspended?.title ?? tab.title,
+    faviconUrl: normalizeFaviconUrl(suspended?.faviconUrl ?? tab.favIconUrl, url),
+  };
   return item;
 }
 
@@ -259,7 +318,12 @@ async function applyGroupToWindow(
       continue;
     }
 
-    const created = await createTab({ windowId, url, pinned: true, active: false });
+    const created = await createTab({
+      windowId,
+      url: buildSuspendedUrl(items[i]),
+      pinned: true,
+      active: false,
+    });
     if (typeof created.id === "number") {
       pinnedTabIds.add(created.id);
       keepTabIds.add(created.id);
@@ -476,6 +540,18 @@ chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: TabChangeInfo, tab
     pinnedTabIds.delete(tabId);
   }
   void syncPinnedTabsFromWindow(tab.windowId, { allowEmpty: true });
+});
+
+chrome.tabs.onActivated.addListener((activeInfo: TabActivatedInfo) => {
+  void (async () => {
+    const tab = await new Promise<TabInfo | undefined>((resolve) => {
+      chrome.tabs.get(activeInfo.tabId, (result: TabInfo) => resolve(result));
+    });
+    if (!tab?.url) return;
+    const suspended = parseSuspendedUrl(tab.url);
+    if (!suspended?.targetUrl) return;
+    await updateTab(activeInfo.tabId, { url: suspended.targetUrl });
+  })();
 });
 
 chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => {

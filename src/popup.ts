@@ -9,8 +9,8 @@ import {
 } from "./storage.js";
 import type { PinnedGroup, SyncStateV1 } from "./types.js";
 
-type TabInfo = { url?: string; pendingUrl?: string; title?: string };
-type PinnedItemInput = { url: string; title?: string };
+type TabInfo = { url?: string; pendingUrl?: string; title?: string; favIconUrl?: string };
+type PinnedItemInput = { url: string; title?: string; faviconUrl?: string };
 
 const groupNameInput = document.querySelector<HTMLInputElement>("#groupName");
 const saveButton = document.querySelector<HTMLButtonElement>("#saveGroup");
@@ -60,6 +60,39 @@ function dedupeItems(items: PinnedItemInput[]): PinnedItemInput[] {
     result.push(item);
   }
   return result;
+}
+
+function parseSuspendedUrl(rawUrl: string): { targetUrl?: string; title?: string; faviconUrl?: string } | null {
+  const baseUrl = chrome.runtime.getURL("suspended.html");
+  if (!rawUrl.startsWith(baseUrl)) return null;
+  try {
+    const url = new URL(rawUrl);
+    const targetUrl = url.searchParams.get("target") ?? undefined;
+    const title = url.searchParams.get("title") ?? undefined;
+    const faviconUrl = url.searchParams.get("favicon") ?? undefined;
+    return { targetUrl, title, faviconUrl };
+  } catch {
+    return null;
+  }
+}
+
+function isHttpUrl(value: string | undefined): boolean {
+  return Boolean(value && /^https?:\/\//.test(value));
+}
+
+function buildFaviconFallback(targetUrl: string): string | undefined {
+  if (!isHttpUrl(targetUrl)) return undefined;
+  const url = new URL("https://www.google.com/s2/favicons");
+  url.searchParams.set("sz", "64");
+  url.searchParams.set("domain_url", targetUrl);
+  return url.toString();
+}
+
+function normalizeFaviconUrl(input: string | undefined, targetUrl: string): string | undefined {
+  if (input && (input.startsWith("data:") || input.startsWith("http://") || input.startsWith("https://"))) {
+    return input;
+  }
+  return buildFaviconFallback(targetUrl);
 }
 
 function getNextGroupOrder(state: SyncStateV1): number {
@@ -204,10 +237,16 @@ async function getPinnedItemsFromCurrentWindow(): Promise<PinnedItemInput[]> {
 
   const items = tabs
     .map((tab) => {
-      const url = tab.url ?? tab.pendingUrl ?? "";
-      if (!url || url === "about:blank" || url.startsWith("chrome://newtab")) return null;
+      const rawUrl = tab.url ?? tab.pendingUrl ?? "";
+      if (!rawUrl || rawUrl === "about:blank" || rawUrl.startsWith("chrome://newtab")) return null;
+      const suspended = parseSuspendedUrl(rawUrl);
+      const url = suspended?.targetUrl ?? rawUrl;
+      if (!url) return null;
       const item: PinnedItemInput = { url };
-      if (tab.title) item.title = tab.title;
+      const title = suspended?.title ?? tab.title;
+      if (title) item.title = title;
+      const faviconUrl = normalizeFaviconUrl(suspended?.faviconUrl ?? tab.favIconUrl, url);
+      if (faviconUrl) item.faviconUrl = faviconUrl;
       return item;
     })
     .filter((item): item is PinnedItemInput => Boolean(item));
