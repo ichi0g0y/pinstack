@@ -395,8 +395,29 @@ async function deleteGroup(groupId: string): Promise<void> {
   if (localState.activeGroupId === groupId) {
     await setActiveGroupId(undefined);
   }
-  await ensureDefaultGroup();
-  setStatus("Group deleted.");
+  const ensured = await ensureDefaultGroup();
+  const nextDefaultId = ensured.defaultGroupId;
+  if (nextDefaultId) {
+    await setActiveGroupId(nextDefaultId);
+    const windowId = await new Promise<number | undefined>((resolve) => {
+      chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
+    });
+    if (typeof windowId === "number") {
+      await setWindowGroupId(windowId, nextDefaultId);
+      chrome.runtime.sendMessage({
+        type: "pinstack:apply-default-group",
+        windowId,
+        groupId: nextDefaultId,
+        suppressSync: true,
+        suppressCloseToSuspend: true,
+      });
+    }
+  }
+  chrome.runtime.sendMessage({
+    type: "pinstack:group-deleted",
+    groupId,
+  });
+  setStatus("Group deleted. Default is now syncing here.");
   await renderGroups();
 }
 

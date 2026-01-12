@@ -42,6 +42,8 @@ const pinnedTabIds = new Set<number>();
 const pinnedTabCache = new Map<number, TabInfo>();
 const intentionalRemovals = new Set<number>();
 const skipNextActivation = new Set<number>();
+const suppressedSyncByWindow = new Map<number, number>();
+const suppressedCloseToSuspendByWindow = new Map<number, number>();
 let isApplyingGroup = false;
 const pendingWindowSync = new Set<number>();
 const pendingWindowRerun = new Set<number>();
@@ -68,10 +70,21 @@ function createTab(createProperties: TabCreate): Promise<TabInfo | undefined> {
   });
 }
 
-function updateTab(tabId: number, updateProperties: TabUpdate): Promise<TabInfo> {
+function updateTabRaw(tabId: number, updateProperties: TabUpdate): Promise<{ tab?: TabInfo; error?: string }> {
   return new Promise((resolve) => {
-    chrome.tabs.update(tabId, updateProperties, (tab: TabInfo) => resolve(tab));
+    chrome.tabs.update(tabId, updateProperties, (tab: TabInfo) => {
+      const error = chrome.runtime.lastError?.message;
+      if (error) {
+        resolve({ error });
+        return;
+      }
+      resolve({ tab });
+    });
   });
+}
+
+function updateTab(tabId: number, updateProperties: TabUpdate): Promise<TabInfo | undefined> {
+  return updateTabRaw(tabId, updateProperties).then((result) => result.tab);
 }
 
 function moveTab(tabId: number, index: number): Promise<void> {
@@ -101,11 +114,66 @@ async function createTabWithRetry(
   return undefined;
 }
 
-function removeTab(tabId: number): Promise<void> {
-  intentionalRemovals.add(tabId);
-  return new Promise((resolve) => {
-    chrome.tabs.remove(tabId, () => resolve());
+async function updateTabWithRetry(
+  tabId: number,
+  updateProperties: TabUpdate,
+  retries = 6,
+  delayMs = 120
+): Promise<TabInfo | undefined> {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const result = await updateTabRaw(tabId, updateProperties);
+    if (result.tab) return result.tab;
+    if (attempt < retries) {
+      await sleep(delayMs);
+    }
+  }
+  console.warn("pinstack: updateTab failed after retries", {
+    tabId,
+    updateProperties,
   });
+  return undefined;
+}
+
+function removeTabRaw(tabId: number): Promise<{ error?: string }> {
+  return new Promise((resolve) => {
+    chrome.tabs.remove(tabId, () => {
+      const error = chrome.runtime.lastError?.message;
+      if (error) {
+        resolve({ error });
+        return;
+      }
+      resolve({});
+    });
+  });
+}
+
+async function removeTabWithRetry(tabId: number, retries = 4, delayMs = 120): Promise<boolean> {
+  intentionalRemovals.add(tabId);
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const result = await removeTabRaw(tabId);
+    if (!result.error) return true;
+    if (attempt < retries) {
+      await sleep(delayMs);
+    }
+  }
+  console.warn("pinstack: removeTab failed after retries", { tabId });
+  return false;
+}
+
+function removeTab(tabId: number): Promise<void> {
+  return removeTabWithRetry(tabId).then(() => undefined);
+}
+
+function suppressCloseToSuspend(windowId: number, durationMs = 2000): void {
+  suppressedCloseToSuspendByWindow.set(windowId, Date.now() + durationMs);
+}
+
+function isCloseToSuspendSuppressed(windowId: number): boolean {
+  const until = suppressedCloseToSuspendByWindow.get(windowId);
+  if (!until) return false;
+  if (until > Date.now()) return true;
+  suppressedCloseToSuspendByWindow.delete(windowId);
+  return false;
 }
 
 function getAllWindows(): Promise<WindowInfo[]> {
@@ -271,6 +339,7 @@ async function resolveSyncGroupId(state: SyncStateV1, windowId?: number): Promis
     if (mappedId) {
       await clearWindowGroupId(windowId);
     }
+    return state.defaultGroupId;
   }
   if (localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)) {
     return localState.activeGroupId;
@@ -278,13 +347,17 @@ async function resolveSyncGroupId(state: SyncStateV1, windowId?: number): Promis
   return state.defaultGroupId;
 }
 
-function getGroupIdForWindow(state: SyncStateV1, windowId: number, localState: Awaited<ReturnType<typeof getLocalState>>): string | undefined {
+function getGroupIdForWindow(
+  state: SyncStateV1,
+  windowId: number,
+  localState: Awaited<ReturnType<typeof getLocalState>>
+): string | undefined {
   const mappedId = localState.windowGroupMap?.[String(windowId)];
   if (mappedId && state.groups.some((group) => group.id === mappedId)) {
     return mappedId;
   }
-  if (localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)) {
-    return localState.activeGroupId;
+  if (mappedId) {
+    return state.defaultGroupId;
   }
   return state.defaultGroupId;
 }
@@ -330,7 +403,7 @@ async function updateGroupItems(
 async function applyGroupToWindow(
   windowId: number,
   items: PinnedItem[],
-  options: { mode?: "exact" | "additive"; removedUrls?: Set<string> } = {}
+  options: { mode?: "exact" | "additive"; removedUrls?: Set<string>; forceCloseExtras?: boolean } = {}
 ): Promise<void> {
   const mode = options.mode ?? "exact";
   const tabs = await queryTabs({ windowId });
@@ -374,7 +447,7 @@ async function applyGroupToWindow(
     const existingUnpinned = unpinnedList?.shift();
 
     if (existingUnpinned?.id !== undefined) {
-      await updateTab(existingUnpinned.id, { pinned: true });
+      await updateTabWithRetry(existingUnpinned.id, { pinned: true });
       pinnedTabIds.add(existingUnpinned.id);
       keepTabIds.add(existingUnpinned.id);
       orderedTabIds.push(existingUnpinned.id);
@@ -403,13 +476,22 @@ async function applyGroupToWindow(
     for (const tab of pinnedTabs) {
       if (tab.id === undefined) continue;
       if (keepTabIds.has(tab.id)) continue;
-      await updateTab(tab.id, { pinned: false });
+      if (options.forceCloseExtras) {
+        await removeTabWithRetry(tab.id);
+      } else {
+        const updated = await updateTabWithRetry(tab.id, { pinned: false });
+        if (!updated) {
+          await removeTabWithRetry(tab.id);
+        }
+      }
       pinnedTabIds.delete(tab.id);
     }
 
     for (let i = 0; i < orderedTabIds.length; i += 1) {
       await moveTab(orderedTabIds[i], i);
     }
+
+    await enforceExactPinned(windowId, items, options.forceCloseExtras);
   } else if (options.removedUrls && options.removedUrls.size > 0) {
     for (const tab of pinnedTabs) {
       const url = normalizeUrl(tab);
@@ -418,6 +500,70 @@ async function applyGroupToWindow(
       await removeTab(tab.id);
       pinnedTabIds.delete(tab.id);
     }
+  }
+}
+
+async function enforceExactPinned(
+  windowId: number,
+  items: PinnedItem[],
+  forceCloseExtras = false,
+  attempts = 2
+): Promise<void> {
+  const allowedCounts = new Map<string, number>();
+  for (const item of items) {
+    allowedCounts.set(item.url, (allowedCounts.get(item.url) ?? 0) + 1);
+  }
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const pinnedTabs = await queryTabs({ windowId, pinned: true });
+    const urlToTabs = new Map<string, TabInfo[]>();
+    for (const tab of pinnedTabs) {
+      const url = normalizeUrl(tab);
+      if (!url) continue;
+      const list = urlToTabs.get(url) ?? [];
+      list.push(tab);
+      urlToTabs.set(url, list);
+    }
+
+    let changed = false;
+    for (const [url, tabs] of urlToTabs.entries()) {
+      const allowed = allowedCounts.get(url) ?? 0;
+      if (allowed === 0) {
+        for (const tab of tabs) {
+          if (tab.id === undefined) continue;
+          if (forceCloseExtras) {
+            await removeTabWithRetry(tab.id);
+          } else {
+            const updated = await updateTabWithRetry(tab.id, { pinned: false });
+            if (!updated) {
+              await removeTabWithRetry(tab.id);
+            }
+          }
+          pinnedTabIds.delete(tab.id);
+          changed = true;
+        }
+        continue;
+      }
+      if (tabs.length > allowed) {
+        const extras = tabs.slice(allowed);
+        for (const tab of extras) {
+          if (tab.id === undefined) continue;
+          if (forceCloseExtras) {
+            await removeTabWithRetry(tab.id);
+          } else {
+            const updated = await updateTabWithRetry(tab.id, { pinned: false });
+            if (!updated) {
+              await removeTabWithRetry(tab.id);
+            }
+          }
+          pinnedTabIds.delete(tab.id);
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) return;
+    await sleep(120);
   }
 }
 
@@ -467,8 +613,20 @@ async function syncPinnedTabsFromWindow(
   options: { allowEmpty?: boolean } = {}
 ): Promise<void> {
   if (!windowId) return;
+  const suppressUntil = suppressedSyncByWindow.get(windowId);
+  if (suppressUntil && suppressUntil > Date.now()) {
+    return;
+  }
+  if (suppressUntil) {
+    suppressedSyncByWindow.delete(windowId);
+  }
   if (pendingWindowSync.has(windowId)) return;
-  const state = await ensureDefaultGroup();
+  let state = await ensureDefaultGroup();
+  const localState = await getLocalState();
+  if (!localState.windowGroupMap?.[String(windowId)]) {
+    await scheduleWindowState(windowId);
+    state = await ensureDefaultGroup();
+  }
   const groupId = await resolveSyncGroupId(state, windowId);
   if (!groupId) return;
 
@@ -746,7 +904,7 @@ chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => 
       pinnedTabCache.delete(tabId);
       return;
     }
-    if (closePinnedToSuspend) {
+    if (closePinnedToSuspend && !isCloseToSuspendSuppressed(removeInfo.windowId)) {
       const cached = pinnedTabCache.get(tabId);
       pinnedTabCache.delete(tabId);
       if (cached) {
@@ -825,15 +983,101 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
     await chrome.action.setBadgeText({ text: "!" });
 
     const state = await ensureDefaultGroup();
-    const [windows, localState] = await Promise.all([getAllWindows(), getLocalState()]);
+    const localState = await getLocalState();
+    const validIds = new Set(state.groups.map((group) => group.id));
+    const windowGroupMap = { ...(localState.windowGroupMap ?? {}) };
+    const remappedWindows = new Set<number>();
+    let mapChanged = false;
+
+    for (const [key, value] of Object.entries(windowGroupMap)) {
+      if (validIds.has(value)) continue;
+      mapChanged = true;
+      if (state.defaultGroupId) {
+        windowGroupMap[key] = state.defaultGroupId;
+        remappedWindows.add(Number(key));
+      } else {
+        delete windowGroupMap[key];
+      }
+    }
+
+    if (mapChanged) {
+      await updateLocalState({ windowGroupMap });
+    }
+
+    const windows = await getAllWindows();
     for (const window of windows) {
       if (typeof window.id !== "number") continue;
-      const groupId = getGroupIdForWindow(state, window.id, localState);
+      const groupId = getGroupIdForWindow(state, window.id, { ...localState, windowGroupMap });
       const group = state.groups.find((candidate) => candidate.id === groupId);
       if (!group) continue;
+      if (remappedWindows.has(window.id) && state.defaultGroupId) {
+        const defaultGroup = state.groups.find((candidate) => candidate.id === state.defaultGroupId);
+        if (defaultGroup) {
+          suppressCloseToSuspend(window.id);
+          await applyGroupToWindow(window.id, defaultGroup.items, { mode: "exact", forceCloseExtras: true });
+          continue;
+        }
+      }
       await applyGroupToWindow(window.id, group.items, { mode: "exact" });
     }
   })();
+});
+
+chrome.runtime.onMessage.addListener(
+  (message: {
+    type?: string;
+    windowId?: number;
+    groupId?: string;
+    suppressSync?: boolean;
+    suppressCloseToSuspend?: boolean;
+  }) => {
+  if (message?.type === "pinstack:apply-default-group") {
+    if (typeof message.windowId !== "number" || typeof message.groupId !== "string") return;
+    const windowId = message.windowId;
+    const groupId = message.groupId;
+    void (async () => {
+      const state = await ensureDefaultGroup();
+      if (state.defaultGroupId !== groupId) return;
+      const group = state.groups.find((candidate) => candidate.id === groupId);
+      if (!group) return;
+      if (message.suppressSync) {
+        suppressedSyncByWindow.set(windowId, Date.now() + 1500);
+      }
+      if (message.suppressCloseToSuspend) {
+        suppressCloseToSuspend(windowId);
+      }
+      await setActiveGroupId(group.id);
+      await setWindowGroupId(windowId, group.id);
+      await applyGroupToWindow(windowId, group.items, { mode: "exact", forceCloseExtras: true });
+    })();
+    return;
+  }
+
+  if (message?.type === "pinstack:group-deleted") {
+    if (typeof message.groupId !== "string") return;
+    const deletedGroupId = message.groupId;
+    void (async () => {
+      const state = await ensureDefaultGroup();
+      const defaultId = state.defaultGroupId;
+      if (!defaultId) return;
+      const localState = await getLocalState();
+      const windowGroupMap = { ...(localState.windowGroupMap ?? {}) };
+      const windows = await getAllWindows();
+      const defaultGroup = state.groups.find((candidate) => candidate.id === defaultId);
+      if (!defaultGroup) return;
+
+      for (const window of windows) {
+        if (typeof window.id !== "number") continue;
+        const mappedId = windowGroupMap[String(window.id)];
+        if (mappedId !== deletedGroupId) continue;
+        windowGroupMap[String(window.id)] = defaultId;
+        suppressCloseToSuspend(window.id);
+        await applyGroupToWindow(window.id, defaultGroup.items, { mode: "exact", forceCloseExtras: true });
+      }
+
+      await updateLocalState({ windowGroupMap });
+    })();
+  }
 });
 
 chrome.runtime.onInstalled.addListener(() => {
