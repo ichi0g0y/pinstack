@@ -17,6 +17,7 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
   hasRemoteUpdate: false,
   activeGroupId: undefined,
   closePinnedToSuspend: false,
+  windowGroupMap: {},
 };
 
 const DEFAULT_PREFERENCES: PreferenceStateV1 = {
@@ -65,6 +66,13 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_LOCAL_STATE };
   const candidate = raw as LocalStateV1;
   if (candidate.version !== 1) return { ...DEFAULT_LOCAL_STATE };
+  const map = candidate.windowGroupMap && typeof candidate.windowGroupMap === "object" ? candidate.windowGroupMap : {};
+  const windowGroupMap: Record<string, string> = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (typeof value === "string") {
+      windowGroupMap[key] = value;
+    }
+  }
   return {
     version: 1,
     lastLocalWriteAt: typeof candidate.lastLocalWriteAt === "number" ? candidate.lastLocalWriteAt : 0,
@@ -74,6 +82,7 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
       typeof candidate.closePinnedToSuspend === "boolean"
         ? candidate.closePinnedToSuspend
         : DEFAULT_LOCAL_STATE.closePinnedToSuspend,
+    windowGroupMap,
   };
 }
 
@@ -117,6 +126,22 @@ export async function updateLocalState(partial: Partial<LocalStateV1>): Promise<
   const next: LocalStateV1 = { ...current, ...partial, version: 1 };
   await setLocalState(next);
   return next;
+}
+
+export async function setWindowGroupId(windowId: number, groupId: string): Promise<LocalStateV1> {
+  const current = await getLocalState();
+  const windowGroupMap = { ...(current.windowGroupMap ?? {}), [String(windowId)]: groupId };
+  return updateLocalState({ windowGroupMap });
+}
+
+export async function clearWindowGroupId(windowId: number): Promise<LocalStateV1> {
+  const current = await getLocalState();
+  if (!current.windowGroupMap || !(String(windowId) in current.windowGroupMap)) {
+    return current;
+  }
+  const nextMap = { ...current.windowGroupMap };
+  delete nextMap[String(windowId)];
+  return updateLocalState({ windowGroupMap: nextMap });
 }
 
 export async function getPreferences(): Promise<PreferenceStateV1> {

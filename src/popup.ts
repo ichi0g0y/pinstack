@@ -5,6 +5,7 @@ import {
   getPreferences,
   markLocalWrite,
   setActiveGroupId,
+  setWindowGroupId,
   setSyncState,
   updateLocalState,
   updatePreferences,
@@ -13,6 +14,7 @@ import type { PinnedGroup, SyncStateV1 } from "./types.js";
 
 type TabInfo = { url?: string; pendingUrl?: string; title?: string; favIconUrl?: string };
 type PinnedItemInput = { url: string; title?: string; faviconUrl?: string };
+type WindowInfo = { id?: number };
 
 const groupNameInput = document.querySelector<HTMLInputElement>("#groupName");
 const saveButton = document.querySelector<HTMLButtonElement>("#saveGroup");
@@ -395,6 +397,12 @@ async function setActiveGroup(groupId: string): Promise<void> {
   if (!state.groups.some((group) => group.id === groupId)) return;
 
   await setActiveGroupId(groupId);
+  const windowId = await new Promise<number | undefined>((resolve) => {
+    chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
+  });
+  if (typeof windowId === "number") {
+    await setWindowGroupId(windowId, groupId);
+  }
   await syncGroupFromPinnedTabs(groupId);
   setStatus("Sync group updated.");
   await renderGroups();

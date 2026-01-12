@@ -4,6 +4,8 @@ import {
   getLocalState,
   getPreferences,
   getSyncState,
+  setWindowGroupId,
+  clearWindowGroupId,
   markLocalWrite,
   setActiveGroupId,
   setSyncState,
@@ -259,8 +261,28 @@ async function seedPinnedTabIds(): Promise<void> {
   }
 }
 
-async function resolveSyncGroupId(state: SyncStateV1): Promise<string | undefined> {
+async function resolveSyncGroupId(state: SyncStateV1, windowId?: number): Promise<string | undefined> {
   const localState = await getLocalState();
+  if (typeof windowId === "number") {
+    const mappedId = localState.windowGroupMap?.[String(windowId)];
+    if (mappedId && state.groups.some((group) => group.id === mappedId)) {
+      return mappedId;
+    }
+    if (mappedId) {
+      await clearWindowGroupId(windowId);
+    }
+  }
+  if (localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)) {
+    return localState.activeGroupId;
+  }
+  return state.defaultGroupId;
+}
+
+function getGroupIdForWindow(state: SyncStateV1, windowId: number, localState: Awaited<ReturnType<typeof getLocalState>>): string | undefined {
+  const mappedId = localState.windowGroupMap?.[String(windowId)];
+  if (mappedId && state.groups.some((group) => group.id === mappedId)) {
+    return mappedId;
+  }
   if (localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)) {
     return localState.activeGroupId;
   }
@@ -418,6 +440,28 @@ async function applyGroupToAllWindows(
   }
 }
 
+async function applyGroupToMappedWindows(
+  groupId: string,
+  items: PinnedItem[],
+  options: { sourceWindowId?: number; removedUrls?: Set<string> } = {}
+): Promise<void> {
+  if (isApplyingGroup) return;
+  isApplyingGroup = true;
+  try {
+    const [windows, localState, state] = await Promise.all([getAllWindows(), getLocalState(), ensureDefaultGroup()]);
+    for (const window of windows) {
+      if (typeof window.id !== "number") continue;
+      if (pendingWindowSync.has(window.id)) continue;
+      const resolvedId = getGroupIdForWindow(state, window.id, localState);
+      if (resolvedId !== groupId) continue;
+      const mode = window.id === options.sourceWindowId ? "exact" : "additive";
+      await applyGroupToWindow(window.id, items, { mode, removedUrls: options.removedUrls });
+    }
+  } finally {
+    isApplyingGroup = false;
+  }
+}
+
 async function syncPinnedTabsFromWindow(
   windowId: number | undefined,
   options: { allowEmpty?: boolean } = {}
@@ -425,7 +469,7 @@ async function syncPinnedTabsFromWindow(
   if (!windowId) return;
   if (pendingWindowSync.has(windowId)) return;
   const state = await ensureDefaultGroup();
-  const groupId = await resolveSyncGroupId(state);
+  const groupId = await resolveSyncGroupId(state, windowId);
   if (!groupId) return;
 
   const items = await getPinnedItems({ windowId, pinned: true });
@@ -437,7 +481,7 @@ async function syncPinnedTabsFromWindow(
         .filter((item) => !items.some((current) => current.url === item.url))
         .map((item) => item.url)
     );
-    await applyGroupToAllWindows(items, { sourceWindowId: windowId, removedUrls });
+    await applyGroupToMappedWindows(groupId, items, { sourceWindowId: windowId, removedUrls });
   }
 }
 
@@ -496,22 +540,43 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
   if (!windowId) return;
 
   await new Promise((resolve) => setTimeout(resolve, 150));
+  const state = await ensureDefaultGroup();
+  const localState = await getLocalState();
+  const mappedId = localState.windowGroupMap?.[String(windowId)];
+  if (mappedId) {
+    const mappedGroup = state.groups.find((group) => group.id === mappedId);
+    if (mappedGroup) {
+      await setActiveGroupId(mappedGroup.id);
+      await setWindowGroupId(windowId, mappedGroup.id);
+      const items = await getPinnedItems({ windowId, pinned: true });
+      if (items.length === 0) {
+        if (mappedGroup.items.length > 0) {
+          await applyGroupToWindow(windowId, mappedGroup.items, { mode: "exact" });
+        }
+      } else {
+        await updateGroupItems(mappedGroup.id, items);
+      }
+      return;
+    }
+    await clearWindowGroupId(windowId);
+  }
+
   const items = await getPinnedItems({ windowId, pinned: true });
 
   if (items.length === 0) {
-    const state = await ensureDefaultGroup();
     if (state.defaultGroupId) {
       await setActiveGroupId(state.defaultGroupId);
+      await setWindowGroupId(windowId, state.defaultGroupId);
     }
     await maybeRestoreDefaultGroup(windowId, state);
     return;
   }
 
-  const state = await ensureDefaultGroup();
   const matchingGroup = findMatchingGroup(state.groups, items);
 
   if (matchingGroup) {
     await setActiveGroupId(matchingGroup.id);
+    await setWindowGroupId(windowId, matchingGroup.id);
     await updateGroupItems(matchingGroup.id, items);
     return;
   }
@@ -532,6 +597,7 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
   await markLocalWrite();
   await setSyncState(nextState);
   await setActiveGroupId(newGroup.id);
+  await setWindowGroupId(windowId, newGroup.id);
 }
 
 async function scheduleWindowState(windowId: number | undefined): Promise<void> {
@@ -603,6 +669,10 @@ chrome.windows.onCreated.addListener((window: WindowInfo) => {
   if (window.type && window.type !== "normal") return;
   if (typeof window.id !== "number") return;
   scheduleWindowStateDebounced(window.id, 250);
+});
+
+chrome.windows.onRemoved.addListener((windowId: number) => {
+  void clearWindowGroupId(windowId);
 });
 
 chrome.tabs.onCreated.addListener((tab: TabInfo) => {
@@ -755,10 +825,13 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
     await chrome.action.setBadgeText({ text: "!" });
 
     const state = await ensureDefaultGroup();
-    const groupId = await resolveSyncGroupId(state);
-    const group = state.groups.find((candidate) => candidate.id === groupId);
-    if (group) {
-      await applyGroupToAllWindows(group.items, { removedUrls: new Set() });
+    const [windows, localState] = await Promise.all([getAllWindows(), getLocalState()]);
+    for (const window of windows) {
+      if (typeof window.id !== "number") continue;
+      const groupId = getGroupIdForWindow(state, window.id, localState);
+      const group = state.groups.find((candidate) => candidate.id === groupId);
+      if (!group) continue;
+      await applyGroupToWindow(window.id, group.items, { mode: "exact" });
     }
   })();
 });

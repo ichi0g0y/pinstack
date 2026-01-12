@@ -21,6 +21,7 @@ export type LocalStateV1 = {
   hasRemoteUpdate: boolean;
   activeGroupId?: string;
   closePinnedToSuspend?: boolean;
+  windowGroupMap?: Record<string, string>;
 };
 
 export type PreferenceStateV1 = {
