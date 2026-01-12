@@ -36,6 +36,9 @@ type TabActivatedInfo = { tabId: number; windowId: number };
 const pinnedTabIds = new Set<number>();
 let isApplyingGroup = false;
 const pendingWindowSync = new Set<number>();
+const pendingWindowRerun = new Set<number>();
+const windowRestoreLocks = new Set<number>();
+const windowStateTimers = new Map<number, number>();
 const SUSPENDED_PAGE = chrome.runtime.getURL("suspended.html");
 
 function queryTabs(queryInfo: TabsQuery): Promise<TabInfo[]> {
@@ -44,9 +47,15 @@ function queryTabs(queryInfo: TabsQuery): Promise<TabInfo[]> {
   });
 }
 
-function createTab(createProperties: TabCreate): Promise<TabInfo> {
+function createTab(createProperties: TabCreate): Promise<TabInfo | undefined> {
   return new Promise((resolve) => {
-    chrome.tabs.create(createProperties, (tab: TabInfo) => resolve(tab));
+    chrome.tabs.create(createProperties, (tab: TabInfo) => {
+      if (chrome.runtime.lastError) {
+        resolve(undefined);
+        return;
+      }
+      resolve(tab);
+    });
   });
 }
 
@@ -60,6 +69,27 @@ function moveTab(tabId: number, index: number): Promise<void> {
   return new Promise((resolve) => {
     chrome.tabs.move(tabId, { index }, () => resolve());
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function createTabWithRetry(
+  createProperties: TabCreate,
+  retries = 8,
+  delayMs = 120
+): Promise<TabInfo | undefined> {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const created = await createTab(createProperties);
+    if (created) return created;
+    if (attempt < retries) {
+      await sleep(delayMs);
+    }
+  }
+  return undefined;
 }
 
 function removeTab(tabId: number): Promise<void> {
@@ -134,22 +164,6 @@ function buildSuspendedUrl(item: PinnedItem): string {
   const normalizedFavicon = normalizeFaviconUrl(item.faviconUrl, item.url);
   if (normalizedFavicon) url.searchParams.set("favicon", normalizedFavicon);
   return url.toString();
-}
-
-async function createPinnedTabs(windowId: number, items: PinnedItem[]): Promise<void> {
-  for (let i = 0; i < items.length; i += 1) {
-    const item = items[i];
-    const created = await createTab({
-      windowId,
-      url: buildSuspendedUrl(item),
-      pinned: true,
-      index: i,
-      active: false,
-    });
-    if (typeof created.id === "number") {
-      pinnedTabIds.add(created.id);
-    }
-  }
 }
 
 function tabToItem(tab: TabInfo): PinnedItem | null {
@@ -295,6 +309,7 @@ async function applyGroupToWindow(
 
   const keepTabIds = new Set<number>();
   const orderedTabIds: number[] = [];
+  const createdUrls = new Set<string>();
 
   for (let i = 0; i < items.length; i += 1) {
     const url = items[i].url;
@@ -318,13 +333,15 @@ async function applyGroupToWindow(
       continue;
     }
 
-    const created = await createTab({
+    if (createdUrls.has(url)) continue;
+    createdUrls.add(url);
+    const created = await createTabWithRetry({
       windowId,
       url: buildSuspendedUrl(items[i]),
       pinned: true,
       active: false,
     });
-    if (typeof created.id === "number") {
+    if (typeof created?.id === "number") {
       pinnedTabIds.add(created.id);
       keepTabIds.add(created.id);
       orderedTabIds.push(created.id);
@@ -443,7 +460,7 @@ async function maybeRestoreDefaultGroup(
   const group = nextState.groups.find((candidate) => candidate.id === nextState.defaultGroupId);
   if (!group || group.items.length === 0) return;
 
-  await createPinnedTabs(windowId, group.items);
+  await applyGroupToWindow(windowId, group.items, { mode: "exact" });
 }
 
 async function handleWindowState(windowId: number | undefined): Promise<void> {
@@ -488,6 +505,41 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
   await setActiveGroupId(newGroup.id);
 }
 
+async function scheduleWindowState(windowId: number | undefined): Promise<void> {
+  if (!windowId) return;
+  if (windowRestoreLocks.has(windowId)) return;
+  windowRestoreLocks.add(windowId);
+  if (pendingWindowSync.has(windowId)) {
+    pendingWindowRerun.add(windowId);
+    windowRestoreLocks.delete(windowId);
+    return;
+  }
+  pendingWindowSync.add(windowId);
+  try {
+    await handleWindowState(windowId);
+  } finally {
+    pendingWindowSync.delete(windowId);
+    windowRestoreLocks.delete(windowId);
+    if (pendingWindowRerun.has(windowId)) {
+      pendingWindowRerun.delete(windowId);
+      await scheduleWindowState(windowId);
+    }
+  }
+}
+
+function scheduleWindowStateDebounced(windowId: number | undefined, delayMs = 250): void {
+  if (!windowId) return;
+  const existing = windowStateTimers.get(windowId);
+  if (existing) {
+    clearTimeout(existing);
+  }
+  const timer = setTimeout(() => {
+    windowStateTimers.delete(windowId);
+    void scheduleWindowState(windowId);
+  }, delayMs);
+  windowStateTimers.set(windowId, timer as unknown as number);
+}
+
 async function maybeRestoreDefaultGroupInAllWindows(): Promise<void> {
   const tabs = await queryTabs({});
   const windowIds = new Set<number>();
@@ -505,24 +557,13 @@ async function maybeRestoreDefaultGroupInAllWindows(): Promise<void> {
 async function handleLastFocusedWindow(): Promise<void> {
   const windowId = await getLastFocusedWindowId();
   if (!windowId) return;
-  if (pendingWindowSync.has(windowId)) return;
-  pendingWindowSync.add(windowId);
-  try {
-    await handleWindowState(windowId);
-  } finally {
-    pendingWindowSync.delete(windowId);
-  }
+  await scheduleWindowState(windowId);
 }
 
 chrome.windows.onCreated.addListener((window: WindowInfo) => {
   if (window.type && window.type !== "normal") return;
   if (typeof window.id !== "number") return;
-  const windowId = window.id;
-  pendingWindowSync.add(windowId);
-  void (async () => {
-    await handleWindowState(windowId);
-    pendingWindowSync.delete(windowId);
-  })();
+  scheduleWindowStateDebounced(window.id, 250);
 });
 
 chrome.tabs.onCreated.addListener((tab: TabInfo) => {
@@ -572,11 +613,14 @@ chrome.commands.onCommand.addListener((command: string) => {
 
 chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => {
   if (isApplyingGroup) return;
-  if (removeInfo.isWindowClosing) {
+  const wasPinned = pinnedTabIds.has(tabId);
+  if (wasPinned) {
     pinnedTabIds.delete(tabId);
+  }
+  if (removeInfo.isWindowClosing) {
     return;
   }
-  pinnedTabIds.delete(tabId);
+  if (!wasPinned) return;
   void syncPinnedTabsFromWindow(removeInfo.windowId, { allowEmpty: true });
 });
 
@@ -594,8 +638,7 @@ chrome.tabs.onDetached.addListener((tabId: number, detachInfo: TabDetachInfo) =>
 
 chrome.tabs.onAttached.addListener((tabId: number, attachInfo: TabAttachInfo) => {
   if (isApplyingGroup) return;
-  if (!pinnedTabIds.has(tabId)) return;
-  void syncPinnedTabsFromWindow(attachInfo.newWindowId);
+  scheduleWindowStateDebounced(attachInfo.newWindowId, 250);
 });
 
 type StorageChanges = Record<string, { oldValue?: unknown; newValue?: unknown }>;
