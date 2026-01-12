@@ -349,8 +349,16 @@ async function saveGroupFromPinnedTabs(): Promise<void> {
   await setSyncState(nextState);
   await clearRemoteNotice();
 
+  await setActiveGroupId(newGroup.id);
+  const windowId = await new Promise<number | undefined>((resolve) => {
+    chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
+  });
+  if (typeof windowId === "number") {
+    await setWindowGroupId(windowId, newGroup.id);
+  }
+
   groupNameInputEl.value = "";
-  setStatus("Group saved.");
+  setStatus("Group saved and syncing here.");
   saveButtonEl.disabled = false;
   await renderGroups();
 }
