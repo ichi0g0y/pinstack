@@ -2,12 +2,15 @@ import {
   ensureDefaultGroup,
   generateId,
   getLocalState,
+  getPreferences,
   getSyncState,
   markLocalWrite,
   setActiveGroupId,
   setSyncState,
   updateLocalState,
+  updatePreferences,
   wasRecentLocalWrite,
+  PREFS_KEY,
   SYNC_KEY,
 } from "./storage.js";
 import type { PinnedGroup, PinnedItem, SyncStateV1 } from "./types.js";
@@ -34,12 +37,16 @@ type TabAttachInfo = { newWindowId: number; newPosition: number };
 type TabActivatedInfo = { tabId: number; windowId: number };
 
 const pinnedTabIds = new Set<number>();
+const pinnedTabCache = new Map<number, TabInfo>();
+const intentionalRemovals = new Set<number>();
+const skipNextActivation = new Set<number>();
 let isApplyingGroup = false;
 const pendingWindowSync = new Set<number>();
 const pendingWindowRerun = new Set<number>();
 const windowRestoreLocks = new Set<number>();
 const windowStateTimers = new Map<number, number>();
 const SUSPENDED_PAGE = chrome.runtime.getURL("suspended.html");
+let closePinnedToSuspend = false;
 
 function queryTabs(queryInfo: TabsQuery): Promise<TabInfo[]> {
   return new Promise((resolve) => {
@@ -93,6 +100,7 @@ async function createTabWithRetry(
 }
 
 function removeTab(tabId: number): Promise<void> {
+  intentionalRemovals.add(tabId);
   return new Promise((resolve) => {
     chrome.tabs.remove(tabId, () => resolve());
   });
@@ -176,6 +184,24 @@ function tabToItem(tab: TabInfo): PinnedItem | null {
     faviconUrl: normalizeFaviconUrl(suspended?.faviconUrl ?? tab.favIconUrl, url),
   };
   return item;
+}
+
+function cachePinnedTab(tab: TabInfo): void {
+  if (tab.id === undefined) return;
+  if (tab.pinned) {
+    pinnedTabCache.set(tab.id, {
+      id: tab.id,
+      url: tab.url,
+      pendingUrl: tab.pendingUrl,
+      title: tab.title,
+      favIconUrl: tab.favIconUrl,
+      pinned: tab.pinned,
+      windowId: tab.windowId,
+      index: tab.index,
+    });
+  } else {
+    pinnedTabCache.delete(tab.id);
+  }
 }
 
 function dedupeItems(items: PinnedItem[]): PinnedItem[] {
@@ -345,6 +371,9 @@ async function applyGroupToWindow(
       pinnedTabIds.add(created.id);
       keepTabIds.add(created.id);
       orderedTabIds.push(created.id);
+      if (created.pinned) {
+        pinnedTabCache.set(created.id, created);
+      }
     }
   }
 
@@ -527,6 +556,16 @@ async function scheduleWindowState(windowId: number | undefined): Promise<void> 
   }
 }
 
+async function loadPreferences(): Promise<void> {
+  const [prefs, localState] = await Promise.all([getPreferences(), getLocalState()]);
+  if (!prefs.closePinnedToSuspend && localState.closePinnedToSuspend) {
+    const next = await updatePreferences({ closePinnedToSuspend: true });
+    closePinnedToSuspend = Boolean(next.closePinnedToSuspend);
+    return;
+  }
+  closePinnedToSuspend = Boolean(prefs.closePinnedToSuspend);
+}
+
 function scheduleWindowStateDebounced(windowId: number | undefined, delayMs = 250): void {
   if (!windowId) return;
   const existing = windowStateTimers.get(windowId);
@@ -571,17 +610,23 @@ chrome.tabs.onCreated.addListener((tab: TabInfo) => {
   if (!tab.pinned) return;
   if (typeof tab.id === "number") {
     pinnedTabIds.add(tab.id);
+    cachePinnedTab(tab);
   }
   void syncPinnedTabsFromWindow(tab.windowId, { allowEmpty: true });
 });
 
 chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: TabChangeInfo, tab: TabInfo) => {
   if (isApplyingGroup) return;
+  if (tab.pinned) {
+    cachePinnedTab(tab);
+  }
   if (typeof changeInfo.pinned === "undefined") return;
   if (changeInfo.pinned) {
     pinnedTabIds.add(tabId);
+    cachePinnedTab(tab);
   } else {
     pinnedTabIds.delete(tabId);
+    pinnedTabCache.delete(tabId);
   }
   void syncPinnedTabsFromWindow(tab.windowId, { allowEmpty: true });
 });
@@ -594,6 +639,10 @@ chrome.tabs.onActivated.addListener((activeInfo: TabActivatedInfo) => {
     if (!tab?.url) return;
     const suspended = parseSuspendedUrl(tab.url);
     if (!suspended?.targetUrl) return;
+    if (skipNextActivation.has(activeInfo.tabId)) {
+      skipNextActivation.delete(activeInfo.tabId);
+      return;
+    }
     await updateTab(activeInfo.tabId, { url: suspended.targetUrl });
   })();
 });
@@ -613,37 +662,89 @@ chrome.commands.onCommand.addListener((command: string) => {
 
 chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => {
   if (isApplyingGroup) return;
-  const wasPinned = pinnedTabIds.has(tabId);
-  if (wasPinned) {
-    pinnedTabIds.delete(tabId);
-  }
-  if (removeInfo.isWindowClosing) {
-    return;
-  }
-  if (!wasPinned) return;
-  void syncPinnedTabsFromWindow(removeInfo.windowId, { allowEmpty: true });
+  void (async () => {
+    const wasPinned = pinnedTabIds.has(tabId);
+    if (wasPinned) {
+      pinnedTabIds.delete(tabId);
+    }
+    if (removeInfo.isWindowClosing) {
+      return;
+    }
+    if (!wasPinned) return;
+    if (intentionalRemovals.has(tabId)) {
+      intentionalRemovals.delete(tabId);
+      pinnedTabCache.delete(tabId);
+      return;
+    }
+    if (closePinnedToSuspend) {
+      const cached = pinnedTabCache.get(tabId);
+      pinnedTabCache.delete(tabId);
+      if (cached) {
+        const item = tabToItem(cached);
+        if (item) {
+          const windowId = typeof cached.windowId === "number" ? cached.windowId : removeInfo.windowId;
+          const index = typeof cached.index === "number" ? cached.index : 0;
+          const created = await createTabWithRetry({
+            windowId,
+            url: buildSuspendedUrl(item),
+            pinned: true,
+            index,
+            active: true,
+          });
+          if (typeof created?.id === "number") {
+            pinnedTabIds.add(created.id);
+            if (created.pinned) {
+              pinnedTabCache.set(created.id, created);
+            }
+            skipNextActivation.add(created.id);
+          }
+          return;
+        }
+      }
+    } else {
+      pinnedTabCache.delete(tabId);
+    }
+    await syncPinnedTabsFromWindow(removeInfo.windowId, { allowEmpty: true });
+  })();
 });
 
 chrome.tabs.onMoved.addListener((tabId: number, moveInfo: TabMoveInfo) => {
   if (isApplyingGroup) return;
+  const cached = pinnedTabCache.get(tabId);
+  if (cached) {
+    pinnedTabCache.set(tabId, { ...cached, index: moveInfo.toIndex, windowId: moveInfo.windowId });
+  }
   if (!pinnedTabIds.has(tabId)) return;
   void syncPinnedTabsFromWindow(moveInfo.windowId);
 });
 
 chrome.tabs.onDetached.addListener((tabId: number, detachInfo: TabDetachInfo) => {
   if (isApplyingGroup) return;
+  const cached = pinnedTabCache.get(tabId);
+  if (cached) {
+    pinnedTabCache.set(tabId, { ...cached, windowId: detachInfo.oldWindowId });
+  }
   if (!pinnedTabIds.has(tabId)) return;
   void syncPinnedTabsFromWindow(detachInfo.oldWindowId);
 });
 
 chrome.tabs.onAttached.addListener((tabId: number, attachInfo: TabAttachInfo) => {
   if (isApplyingGroup) return;
+  const cached = pinnedTabCache.get(tabId);
+  if (cached) {
+    pinnedTabCache.set(tabId, { ...cached, windowId: attachInfo.newWindowId, index: attachInfo.newPosition });
+  }
   scheduleWindowStateDebounced(attachInfo.newWindowId, 250);
 });
 
 type StorageChanges = Record<string, { oldValue?: unknown; newValue?: unknown }>;
 
 chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string) => {
+  if (areaName === "sync" && changes[PREFS_KEY]) {
+    const next = changes[PREFS_KEY]?.newValue as { closePinnedToSuspend?: boolean } | undefined;
+    closePinnedToSuspend = Boolean(next?.closePinnedToSuspend);
+    return;
+  }
   if (areaName !== "sync" || !changes[SYNC_KEY]) return;
   void (async () => {
     const recentLocalWrite = await wasRecentLocalWrite();
@@ -666,6 +767,7 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeText({ text: "" });
   chrome.action.setBadgeBackgroundColor({ color: "#d1492e" });
   void (async () => {
+    await loadPreferences();
     await initializeSyncState();
     await handleLastFocusedWindow();
   })();
@@ -673,6 +775,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   void (async () => {
+    await loadPreferences();
     await initializeSyncState();
     await handleLastFocusedWindow();
     await maybeRestoreDefaultGroupInAllWindows();
@@ -680,6 +783,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 void (async () => {
+  await loadPreferences();
   await initializeSyncState();
   await handleLastFocusedWindow();
 })();

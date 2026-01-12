@@ -1,8 +1,9 @@
-import type { LocalStateV1, PinnedGroup, SyncStateV1 } from "./types.js";
+import type { LocalStateV1, PinnedGroup, PreferenceStateV1, SyncStateV1 } from "./types.js";
 import { nanoid } from "./id.js";
 
 export const SYNC_KEY = "pinstack_sync_state_v1";
 export const LOCAL_KEY = "pinstack_local_state_v1";
+export const PREFS_KEY = "pinstack_preferences_v1";
 
 const DEFAULT_SYNC_STATE: SyncStateV1 = {
   version: 1,
@@ -15,6 +16,12 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
   lastLocalWriteAt: 0,
   hasRemoteUpdate: false,
   activeGroupId: undefined,
+  closePinnedToSuspend: false,
+};
+
+const DEFAULT_PREFERENCES: PreferenceStateV1 = {
+  version: 1,
+  closePinnedToSuspend: false,
 };
 
 function isPinnedGroup(value: unknown): value is PinnedGroup {
@@ -63,6 +70,23 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
     lastLocalWriteAt: typeof candidate.lastLocalWriteAt === "number" ? candidate.lastLocalWriteAt : 0,
     hasRemoteUpdate: Boolean(candidate.hasRemoteUpdate),
     activeGroupId: typeof candidate.activeGroupId === "string" ? candidate.activeGroupId : undefined,
+    closePinnedToSuspend:
+      typeof candidate.closePinnedToSuspend === "boolean"
+        ? candidate.closePinnedToSuspend
+        : DEFAULT_LOCAL_STATE.closePinnedToSuspend,
+  };
+}
+
+function normalizePreferences(raw: unknown): PreferenceStateV1 {
+  if (!raw || typeof raw !== "object") return { ...DEFAULT_PREFERENCES };
+  const candidate = raw as PreferenceStateV1;
+  if (candidate.version !== 1) return { ...DEFAULT_PREFERENCES };
+  return {
+    version: 1,
+    closePinnedToSuspend:
+      typeof candidate.closePinnedToSuspend === "boolean"
+        ? candidate.closePinnedToSuspend
+        : DEFAULT_PREFERENCES.closePinnedToSuspend,
   };
 }
 
@@ -92,6 +116,22 @@ export async function updateLocalState(partial: Partial<LocalStateV1>): Promise<
   const current = await getLocalState();
   const next: LocalStateV1 = { ...current, ...partial, version: 1 };
   await setLocalState(next);
+  return next;
+}
+
+export async function getPreferences(): Promise<PreferenceStateV1> {
+  const result = await chrome.storage.sync.get(PREFS_KEY);
+  return normalizePreferences(result[PREFS_KEY]);
+}
+
+export async function setPreferences(state: PreferenceStateV1): Promise<void> {
+  await chrome.storage.sync.set({ [PREFS_KEY]: state });
+}
+
+export async function updatePreferences(partial: Partial<PreferenceStateV1>): Promise<PreferenceStateV1> {
+  const current = await getPreferences();
+  const next: PreferenceStateV1 = { ...current, ...partial, version: 1 };
+  await setPreferences(next);
   return next;
 }
 

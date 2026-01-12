@@ -20,4 +20,10 @@ export type LocalStateV1 = {
   lastLocalWriteAt: number;
   hasRemoteUpdate: boolean;
   activeGroupId?: string;
+  closePinnedToSuspend?: boolean;
+};
+
+export type PreferenceStateV1 = {
+  version: 1;
+  closePinnedToSuspend: boolean;
 };

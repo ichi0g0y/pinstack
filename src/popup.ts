@@ -2,10 +2,12 @@ import {
   ensureDefaultGroup,
   generateId,
   getLocalState,
+  getPreferences,
   markLocalWrite,
   setActiveGroupId,
   setSyncState,
   updateLocalState,
+  updatePreferences,
 } from "./storage.js";
 import type { PinnedGroup, SyncStateV1 } from "./types.js";
 
@@ -18,8 +20,17 @@ const groupsList = document.querySelector<HTMLDivElement>("#groupsList");
 const emptyState = document.querySelector<HTMLParagraphElement>("#emptyState");
 const statusEl = document.querySelector<HTMLParagraphElement>("#status");
 const syncNotice = document.querySelector<HTMLDivElement>("#syncNotice");
+const closeToSuspendToggle = document.querySelector<HTMLInputElement>("#closeToSuspend");
 
-if (!groupNameInput || !saveButton || !groupsList || !emptyState || !statusEl || !syncNotice) {
+if (
+  !groupNameInput ||
+  !saveButton ||
+  !groupsList ||
+  !emptyState ||
+  !statusEl ||
+  !syncNotice ||
+  !closeToSuspendToggle
+) {
   throw new Error("Popup UI is missing required elements.");
 }
 
@@ -29,6 +40,7 @@ const groupsListEl = groupsList;
 const emptyStateEl = emptyState;
 const statusElEl = statusEl;
 const syncNoticeEl = syncNotice;
+const closeToSuspendToggleEl = closeToSuspendToggle;
 let draggedGroupId: string | null = null;
 
 function setStatus(message: string, tone: "info" | "error" = "info"): void {
@@ -128,6 +140,11 @@ async function refreshSyncNotice(): Promise<void> {
   } else {
     syncNoticeEl.hidden = true;
   }
+}
+
+async function renderPreferences(): Promise<void> {
+  const prefs = await getPreferences();
+  closeToSuspendToggleEl.checked = Boolean(prefs.closePinnedToSuspend);
 }
 
 async function renderGroups(): Promise<void> {
@@ -476,6 +493,10 @@ saveButtonEl.addEventListener("click", () => {
   void saveGroupFromPinnedTabs();
 });
 
+closeToSuspendToggleEl.addEventListener("change", () => {
+  void updatePreferences({ closePinnedToSuspend: closeToSuspendToggleEl.checked });
+});
+
 groupNameInputEl.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -485,5 +506,6 @@ groupNameInputEl.addEventListener("keydown", (event) => {
 
 void (async () => {
   await refreshSyncNotice();
+  await renderPreferences();
   await renderGroups();
 })();

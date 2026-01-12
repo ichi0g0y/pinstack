@@ -24,6 +24,16 @@
         <button id="saveGroup" class="primary" type="button">Save pinned tabs</button>
         <p id="status" class="status" hidden></p>
         <p class="helper">Only pinned tabs from the current window are saved.</p>
+        <div class="toggle-row">
+          <div>
+            <p class="toggle-title">Close to suspend</p>
+            <p class="toggle-note">Closing a pinned tab returns it to a suspended placeholder.</p>
+          </div>
+          <label class="switch">
+            <input id="closeToSuspend" type="checkbox" />
+            <span class="slider" aria-hidden="true"></span>
+          </label>
+        </div>
       </section>
 
       <section id="syncNotice" class="notice" hidden>
