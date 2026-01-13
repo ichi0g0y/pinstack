@@ -184,6 +184,75 @@ button.danger {
   color: var(--muted);
 }
 
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(27, 26, 22, 0.12);
+  background: rgba(27, 26, 22, 0.04);
+}
+
+.toggle-title {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.toggle-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: rgba(27, 26, 22, 0.16);
+  border-radius: 999px;
+  transition: background 0.2s ease;
+}
+
+.slider::before {
+  content: "";
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(27, 26, 22, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.switch input:checked + .slider {
+  background: rgba(213, 107, 47, 0.75);
+}
+
+.switch input:checked + .slider::before {
+  transform: translateX(20px);
+}
+
 .notice {
   border-radius: 14px;
   padding: 10px 12px;
@@ -212,11 +281,26 @@ button.danger {
   animation: cardReveal 0.35s ease both;
 }
 
+.group-card[draggable="true"] {
+  cursor: grab;
+}
+
+.group-card.dragging {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
 .group-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+.badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .group-header h3 {
@@ -232,6 +316,11 @@ button.danger {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
+}
+
+.badge-accent {
+  background: rgba(213, 107, 47, 0.18);
+  color: var(--accent-dark);
 }
 
 .group-meta {

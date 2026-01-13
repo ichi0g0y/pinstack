@@ -1,4 +1,4 @@
-export type PinnedItem = { url: string; title?: string };
+export type PinnedItem = { url: string; title?: string; faviconUrl?: string };
 
 export type PinnedGroup = {
   id: string;
@@ -6,6 +6,7 @@ export type PinnedGroup = {
   items: PinnedItem[];
   createdAt: number;
   updatedAt: number;
+  order?: number;
 };
 
 export type SyncStateV1 = {
@@ -18,4 +19,12 @@ export type LocalStateV1 = {
   version: 1;
   lastLocalWriteAt: number;
   hasRemoteUpdate: boolean;
+  activeGroupId?: string;
+  closePinnedToSuspend?: boolean;
+  windowGroupMap?: Record<string, string>;
+};
+
+export type PreferenceStateV1 = {
+  version: 1;
+  closePinnedToSuspend: boolean;
 };

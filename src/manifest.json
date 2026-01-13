@@ -4,12 +4,36 @@
   "description": "Save and restore pinned tab groups across your devices.",
   "version": "0.1.0",
   "permissions": ["tabs", "storage"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:;"
+  },
+  "icons": {
+    "16": "icons/pin-16.png",
+    "32": "icons/pin-32.png",
+    "48": "icons/pin-48.png",
+    "128": "icons/pin-128.png"
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
   "action": {
     "default_title": "Pinstack",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/pin-16.png",
+      "32": "icons/pin-32.png",
+      "48": "icons/pin-48.png",
+      "128": "icons/pin-128.png"
+    }
+  },
+  "commands": {
+    "suspend-pinned-tab": {
+      "suggested_key": {
+        "default": "Alt+Shift+S",
+        "mac": "Command+Shift+S"
+      },
+      "description": "Suspend the current pinned tab"
+    }
   }
 }

@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "bun run build:ts && bun run build:static",
+    "build:ts": "bunx tsc -p tsconfig.json",
+    "build:static": "bun scripts/copy-static.mjs"
   },
   "devDependencies": {
     "typescript": "^5.5.4"
