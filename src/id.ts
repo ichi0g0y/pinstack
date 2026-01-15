@@ -21,3 +21,19 @@ export function nanoid(size = 21): string {
 
   return id;
 }
+
+function fnv1a32(input: string, seed = 2166136261): number {
+  let hash = seed >>> 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+export function hashPinnedItemId(groupId: string, url: string): string {
+  const payload = `${groupId}|${url}`;
+  const partA = fnv1a32(payload).toString(16).padStart(8, "0");
+  const partB = fnv1a32(payload, 2166136261 ^ 0x01000193).toString(16).padStart(8, "0");
+  return `p-${partA}${partB}`;
+}

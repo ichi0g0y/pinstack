@@ -1,9 +1,10 @@
-import type { LocalStateV1, PinnedGroup, PreferenceStateV1, SyncStateV1 } from "./types.js";
-import { nanoid } from "./id.js";
+import type { LocalStateV1, PinnedGroup, PinnedSnapshot, PreferenceStateV1, SyncStateV1 } from "./types.js";
+import { hashPinnedItemId, nanoid } from "./id.js";
 
 export const SYNC_KEY = "pinstack_sync_state_v1";
 export const LOCAL_KEY = "pinstack_local_state_v1";
 export const PREFS_KEY = "pinstack_preferences_v1";
+export const SNAPSHOT_KEY = "pinstack_pinned_snapshots_v1";
 
 const DEFAULT_SYNC_STATE: SyncStateV1 = {
   version: 1,
@@ -18,11 +19,22 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
   activeGroupId: undefined,
   closePinnedToSuspend: false,
   windowGroupMap: {},
+  windowGroupLockMap: {},
 };
 
 const DEFAULT_PREFERENCES: PreferenceStateV1 = {
   version: 1,
   closePinnedToSuspend: false,
+};
+
+type SnapshotStateV1 = {
+  version: 1;
+  snapshots: Record<string, PinnedSnapshot>;
+};
+
+const DEFAULT_SNAPSHOT_STATE: SnapshotStateV1 = {
+  version: 1,
+  snapshots: {},
 };
 
 function isPinnedGroup(value: unknown): value is PinnedGroup {
@@ -47,13 +59,31 @@ function normalizeSyncState(raw: unknown): SyncStateV1 {
 
   const groups = candidate.groups
     .filter(isPinnedGroup)
-    .map((group) => ({
-      ...group,
-      order: typeof group.order === "number" ? group.order : undefined,
-      items: Array.isArray(group.items)
-        ? group.items.filter((item) => item && typeof item.url === "string" && item.url.trim())
-        : [],
-    }));
+    .map((group) => {
+      const items = Array.isArray(group.items)
+        ? group.items
+            .filter((item) => item && typeof item.url === "string" && item.url.trim())
+            .map((item) => {
+              const candidate = item as { id?: string; url: string; title?: string; faviconUrl?: string };
+              const url = candidate.url.trim();
+              const id =
+                typeof candidate.id === "string" && candidate.id.trim()
+                  ? candidate.id
+                  : hashPinnedItemId(group.id, url);
+              return {
+                id,
+                url,
+                title: typeof candidate.title === "string" ? candidate.title : undefined,
+                faviconUrl: typeof candidate.faviconUrl === "string" ? candidate.faviconUrl : undefined,
+              };
+            })
+        : [];
+      return {
+        ...group,
+        order: typeof group.order === "number" ? group.order : undefined,
+        items,
+      };
+    });
 
   return {
     version: 1,
@@ -73,6 +103,16 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
       windowGroupMap[key] = value;
     }
   }
+  const lockMap =
+    candidate.windowGroupLockMap && typeof candidate.windowGroupLockMap === "object"
+      ? candidate.windowGroupLockMap
+      : {};
+  const windowGroupLockMap: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(lockMap)) {
+    if (typeof value === "boolean") {
+      windowGroupLockMap[key] = value;
+    }
+  }
   return {
     version: 1,
     lastLocalWriteAt: typeof candidate.lastLocalWriteAt === "number" ? candidate.lastLocalWriteAt : 0,
@@ -83,6 +123,7 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
         ? candidate.closePinnedToSuspend
         : DEFAULT_LOCAL_STATE.closePinnedToSuspend,
     windowGroupMap,
+    windowGroupLockMap,
   };
 }
 
@@ -97,6 +138,28 @@ function normalizePreferences(raw: unknown): PreferenceStateV1 {
         ? candidate.closePinnedToSuspend
         : DEFAULT_PREFERENCES.closePinnedToSuspend,
   };
+}
+
+function normalizeSnapshotState(raw: unknown): SnapshotStateV1 {
+  if (!raw || typeof raw !== "object") return { ...DEFAULT_SNAPSHOT_STATE };
+  const candidate = raw as SnapshotStateV1;
+  if (candidate.version !== 1 || !candidate.snapshots || typeof candidate.snapshots !== "object") {
+    return { ...DEFAULT_SNAPSHOT_STATE };
+  }
+  const snapshots: Record<string, PinnedSnapshot> = {};
+  for (const [key, value] of Object.entries(candidate.snapshots)) {
+    if (!value || typeof value !== "object") continue;
+    const snapshot = value as PinnedSnapshot;
+    if (typeof snapshot.url !== "string" || !snapshot.url.trim()) continue;
+    if ("title" in snapshot && typeof snapshot.title !== "string") continue;
+    if ("faviconUrl" in snapshot && typeof snapshot.faviconUrl !== "string") continue;
+    snapshots[key] = {
+      url: snapshot.url.trim(),
+      title: typeof snapshot.title === "string" ? snapshot.title : undefined,
+      faviconUrl: typeof snapshot.faviconUrl === "string" ? snapshot.faviconUrl : undefined,
+    };
+  }
+  return { version: 1, snapshots };
 }
 
 export function generateId(): string {
@@ -144,6 +207,22 @@ export async function clearWindowGroupId(windowId: number): Promise<LocalStateV1
   return updateLocalState({ windowGroupMap: nextMap });
 }
 
+export async function setWindowGroupLock(windowId: number, locked: boolean): Promise<LocalStateV1> {
+  const current = await getLocalState();
+  const windowGroupLockMap = { ...(current.windowGroupLockMap ?? {}), [String(windowId)]: locked };
+  return updateLocalState({ windowGroupLockMap });
+}
+
+export async function clearWindowGroupLock(windowId: number): Promise<LocalStateV1> {
+  const current = await getLocalState();
+  if (!current.windowGroupLockMap || !(String(windowId) in current.windowGroupLockMap)) {
+    return current;
+  }
+  const nextMap = { ...current.windowGroupLockMap };
+  delete nextMap[String(windowId)];
+  return updateLocalState({ windowGroupLockMap: nextMap });
+}
+
 export async function getPreferences(): Promise<PreferenceStateV1> {
   const result = await chrome.storage.sync.get(PREFS_KEY);
   return normalizePreferences(result[PREFS_KEY]);
@@ -158,6 +237,15 @@ export async function updatePreferences(partial: Partial<PreferenceStateV1>): Pr
   const next: PreferenceStateV1 = { ...current, ...partial, version: 1 };
   await setPreferences(next);
   return next;
+}
+
+export async function getPinnedSnapshots(): Promise<Record<string, PinnedSnapshot>> {
+  const result = await chrome.storage.local.get(SNAPSHOT_KEY);
+  return normalizeSnapshotState(result[SNAPSHOT_KEY]).snapshots;
+}
+
+export async function setPinnedSnapshots(snapshots: Record<string, PinnedSnapshot>): Promise<void> {
+  await chrome.storage.local.set({ [SNAPSHOT_KEY]: { version: 1, snapshots } });
 }
 
 export async function setActiveGroupId(groupId?: string): Promise<LocalStateV1> {

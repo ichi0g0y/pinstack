@@ -163,6 +163,16 @@ button.primary:hover {
   background: var(--accent-dark);
 }
 
+button.secondary {
+  background: rgba(27, 26, 22, 0.08);
+  color: var(--ink);
+  box-shadow: 0 6px 14px rgba(27, 26, 22, 0.08);
+}
+
+button.secondary:hover {
+  background: rgba(27, 26, 22, 0.14);
+}
+
 button.danger {
   background: rgba(179, 63, 44, 0.12);
   color: var(--danger);
@@ -279,6 +289,16 @@ button.danger {
   flex-direction: column;
   gap: 8px;
   animation: cardReveal 0.35s ease both;
+}
+
+.group-card[data-active="true"] {
+  border-color: rgba(213, 107, 47, 0.6);
+  box-shadow: 0 10px 20px rgba(213, 107, 47, 0.14);
+  background: linear-gradient(145deg, rgba(213, 107, 47, 0.08), rgba(255, 250, 241, 0.9));
+}
+
+.group-card[data-active="true"] .group-meta {
+  color: var(--ink);
 }
 
 .group-card[draggable="true"] {

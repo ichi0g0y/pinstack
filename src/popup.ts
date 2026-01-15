@@ -3,17 +3,20 @@ import {
   generateId,
   getLocalState,
   getPreferences,
+  getPinnedSnapshots,
   markLocalWrite,
   setActiveGroupId,
+  setPinnedSnapshots,
   setWindowGroupId,
   setSyncState,
   updateLocalState,
   updatePreferences,
 } from "./storage.js";
-import type { PinnedGroup, SyncStateV1 } from "./types.js";
+import { hashPinnedItemId } from "./id.js";
+import type { PinnedGroup, PinnedItem, PinnedSnapshot, SyncStateV1 } from "./types.js";
 
-type TabInfo = { url?: string; pendingUrl?: string; title?: string; favIconUrl?: string };
-type PinnedItemInput = { url: string; title?: string; faviconUrl?: string };
+type TabInfo = { id?: number; url?: string; pendingUrl?: string; title?: string; favIconUrl?: string };
+type PinnedItemInput = PinnedSnapshot;
 type WindowInfo = { id?: number };
 
 const groupNameInput = document.querySelector<HTMLInputElement>("#groupName");
@@ -76,6 +79,15 @@ function dedupeItems(items: PinnedItemInput[]): PinnedItemInput[] {
   return result;
 }
 
+function snapshotToPinnedItem(snapshot: PinnedSnapshot, groupId: string): PinnedItem {
+  return {
+    id: hashPinnedItemId(groupId, snapshot.url),
+    url: snapshot.url,
+    title: snapshot.title,
+    faviconUrl: snapshot.faviconUrl,
+  };
+}
+
 function parseSuspendedUrl(rawUrl: string): { targetUrl?: string; title?: string; faviconUrl?: string } | null {
   const baseUrl = chrome.runtime.getURL("suspended.html");
   if (!rawUrl.startsWith(baseUrl)) return null;
@@ -107,6 +119,21 @@ function normalizeFaviconUrl(input: string | undefined, targetUrl: string): stri
     return input;
   }
   return buildFaviconFallback(targetUrl);
+}
+
+function tabToSnapshot(tab: TabInfo): PinnedSnapshot | null {
+  const rawUrl = tab.url ?? tab.pendingUrl ?? "";
+  if (!rawUrl || rawUrl === "about:blank" || rawUrl.startsWith("chrome://newtab")) return null;
+  const suspended = parseSuspendedUrl(rawUrl);
+  const url = suspended?.targetUrl ?? rawUrl;
+  if (!url) return null;
+  const title = suspended?.title ?? tab.title;
+  const faviconUrl = normalizeFaviconUrl(suspended?.faviconUrl ?? tab.favIconUrl, url);
+  return {
+    url,
+    title: title ?? undefined,
+    faviconUrl: faviconUrl ?? undefined,
+  };
 }
 
 function getNextGroupOrder(state: SyncStateV1): number {
@@ -190,6 +217,7 @@ function createGroupCard(
   card.className = "group-card";
   card.dataset.id = group.id;
   card.dataset.default = isDefault ? "true" : "false";
+  card.dataset.active = isActive ? "true" : "false";
   card.draggable = !isDefault;
 
   const header = document.createElement("div");
@@ -206,7 +234,7 @@ function createGroupCard(
   }
 
   if (isActive) {
-    badges.append(createBadge("Syncing", "accent"));
+    badges.append(createBadge("Current", "accent"));
   }
 
   if (!isDefault && !isActive) {
@@ -231,10 +259,13 @@ function createGroupCard(
 
   const setActiveButton = document.createElement("button");
   setActiveButton.type = "button";
-  setActiveButton.textContent = isActive ? "Syncing" : "Sync here";
+  setActiveButton.textContent = isActive ? "Current" : "Switch";
   setActiveButton.dataset.action = "set-active";
   setActiveButton.dataset.id = group.id;
   setActiveButton.disabled = isActive;
+  if (!isActive) {
+    setActiveButton.className = "primary";
+  }
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
@@ -243,38 +274,63 @@ function createGroupCard(
   deleteButton.dataset.id = group.id;
   deleteButton.className = "danger";
 
+  if (isActive) {
+    const refreshButton = document.createElement("button");
+    refreshButton.type = "button";
+    refreshButton.textContent = "Refresh pins";
+    refreshButton.dataset.action = "refresh";
+    refreshButton.dataset.id = group.id;
+    refreshButton.className = "secondary";
+    actions.append(refreshButton);
+  }
+
   actions.append(setActiveButton, setDefaultButton, deleteButton);
   card.append(header, meta, actions);
 
   return card;
 }
 
-async function getPinnedItemsFromCurrentWindow(): Promise<PinnedItemInput[]> {
-  const tabs = await new Promise<TabInfo[]>((resolve) => {
-    chrome.tabs.query({ currentWindow: true, pinned: true }, (result: TabInfo[]) => resolve(result));
-  });
+async function getPinnedItemsFromCurrentWindow(options: { refreshSnapshots?: boolean } = {}): Promise<PinnedItemInput[]> {
+  const [tabs, snapshots] = await Promise.all([
+    new Promise<TabInfo[]>((resolve) => {
+      chrome.tabs.query({ currentWindow: true, pinned: true }, (result: TabInfo[]) => resolve(result));
+    }),
+    getPinnedSnapshots(),
+  ]);
 
-  const items = tabs
-    .map((tab) => {
-      const rawUrl = tab.url ?? tab.pendingUrl ?? "";
-      if (!rawUrl || rawUrl === "about:blank" || rawUrl.startsWith("chrome://newtab")) return null;
-      const suspended = parseSuspendedUrl(rawUrl);
-      const url = suspended?.targetUrl ?? rawUrl;
-      if (!url) return null;
-      const item: PinnedItemInput = { url };
-      const title = suspended?.title ?? tab.title;
-      if (title) item.title = title;
-      const faviconUrl = normalizeFaviconUrl(suspended?.faviconUrl ?? tab.favIconUrl, url);
-      if (faviconUrl) item.faviconUrl = faviconUrl;
-      return item;
-    })
-    .filter((item): item is PinnedItemInput => Boolean(item));
+  const items: PinnedItemInput[] = [];
+  let changed = false;
+
+  for (const tab of tabs) {
+    const key = typeof tab.id === "number" ? String(tab.id) : undefined;
+    const stored = key ? snapshots[key] : undefined;
+    const shouldRefresh = Boolean(options.refreshSnapshots);
+    if (stored && !shouldRefresh) {
+      items.push(stored);
+      continue;
+    }
+    const snapshot = tabToSnapshot(tab);
+    if (!snapshot) continue;
+    items.push(snapshot);
+    if (key) {
+      snapshots[key] = snapshot;
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await setPinnedSnapshots(snapshots);
+  }
 
   return dedupeItems(items);
 }
 
-async function syncGroupFromPinnedTabs(groupId: string): Promise<void> {
-  const items = await getPinnedItemsFromCurrentWindow();
+async function syncGroupFromPinnedTabs(
+  groupId: string,
+  options: { refreshSnapshots?: boolean } = {}
+): Promise<void> {
+  const snapshots = await getPinnedItemsFromCurrentWindow(options);
+  const items = snapshots.map((item) => snapshotToPinnedItem(item, groupId));
   const state = await ensureDefaultGroup();
   const target = state.groups.find((group) => group.id === groupId);
   if (!target) return;
@@ -283,7 +339,7 @@ async function syncGroupFromPinnedTabs(groupId: string): Promise<void> {
     target.items.length === items.length &&
     target.items.every((item, index) => {
       const candidate = items[index];
-      return item.url === candidate?.url && item.title === candidate?.title;
+      return item.id === candidate?.id && item.url === candidate?.url && item.title === candidate?.title;
     });
 
   if (same) return;
@@ -319,9 +375,9 @@ async function saveGroupFromPinnedTabs(): Promise<void> {
   saveButtonEl.disabled = true;
   setStatus("Capturing pinned tabs…");
 
-  const items = await getPinnedItemsFromCurrentWindow();
+  const snapshots = await getPinnedItemsFromCurrentWindow();
 
-  if (items.length === 0) {
+  if (snapshots.length === 0) {
     setStatus("No pinned tabs found in this window.", "error");
     saveButtonEl.disabled = false;
     return;
@@ -329,9 +385,11 @@ async function saveGroupFromPinnedTabs(): Promise<void> {
 
   const state = await ensureDefaultGroup();
   const now = Date.now();
+  const newGroupId = generateId();
+  const items = snapshots.map((item) => snapshotToPinnedItem(item, newGroupId));
 
   const newGroup: PinnedGroup = {
-    id: generateId(),
+    id: newGroupId,
     name,
     items,
     createdAt: now,
@@ -425,16 +483,33 @@ async function setActiveGroup(groupId: string): Promise<void> {
   const state = await ensureDefaultGroup();
   if (!state.groups.some((group) => group.id === groupId)) return;
 
-  await setActiveGroupId(groupId);
   const windowId = await new Promise<number | undefined>((resolve) => {
     chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
   });
-  if (typeof windowId === "number") {
-    await setWindowGroupId(windowId, groupId);
+  if (typeof windowId !== "number") return;
+  const result = await new Promise<{ ok?: boolean }>((resolve) => {
+    chrome.runtime.sendMessage(
+      {
+        type: "pinstack:apply-group",
+        windowId,
+        groupId,
+      },
+      (response: { ok?: boolean } | undefined) => resolve(response ?? {})
+    );
+  });
+  if (!result.ok) {
+    setStatus("Failed to switch group.", "error");
+    return;
   }
-  await syncGroupFromPinnedTabs(groupId);
-  setStatus("Sync group updated.");
+  setStatus("Switched to group.");
   await renderGroups();
+}
+
+async function refreshPinnedTabs(groupId: string): Promise<void> {
+  setStatus("Refreshing pinned tabs…");
+  await syncGroupFromPinnedTabs(groupId, { refreshSnapshots: true });
+  await renderGroups();
+  setStatus("Pinned tabs refreshed.");
 }
 
 async function persistGroupOrder(): Promise<void> {
@@ -487,6 +562,10 @@ groupsListEl.addEventListener("click", (event) => {
 
   if (target.dataset.action === "delete") {
     void deleteGroup(target.dataset.id);
+  }
+
+  if (target.dataset.action === "refresh") {
+    void refreshPinnedTabs(target.dataset.id);
   }
 });
 

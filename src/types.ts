@@ -1,4 +1,6 @@
-export type PinnedItem = { url: string; title?: string; faviconUrl?: string };
+export type PinnedItem = { id: string; url: string; title?: string; faviconUrl?: string };
+
+export type PinnedSnapshot = { url: string; title?: string; faviconUrl?: string };
 
 export type PinnedGroup = {
   id: string;
@@ -22,6 +24,7 @@ export type LocalStateV1 = {
   activeGroupId?: string;
   closePinnedToSuspend?: boolean;
   windowGroupMap?: Record<string, string>;
+  windowGroupLockMap?: Record<string, boolean>;
 };
 
 export type PreferenceStateV1 = {
