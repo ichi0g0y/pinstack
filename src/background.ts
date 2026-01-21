@@ -54,6 +54,8 @@ const suppressedSyncByWindow = new Map<number, number>();
 const suppressedCloseToSuspendByWindow = new Map<number, number>();
 let isApplyingGroup = false;
 let applyingGroupDepth = 0;
+let isInitializing = true;
+let initializationPromise: Promise<void> | null = null;
 const pendingWindowSync = new Set<number>();
 const pendingWindowRerun = new Set<number>();
 const windowRestoreLocks = new Set<number>();
@@ -172,14 +174,24 @@ async function removeSnapshotForTab(tabId: number): Promise<void> {
   }
 }
 
+async function setSnapshotForTab(tabId: number, snapshot: PinnedSnapshot): Promise<void> {
+  await ensureSnapshotCache();
+  const nextSnapshot = snapshot.id ? snapshot : { ...snapshot, id: generateId() };
+  pinnedSnapshotCache.set(tabId, nextSnapshot);
+  await persistSnapshotCache();
+}
+
 async function ensureSnapshotForTab(
   tab: TabInfo
 ): Promise<{ snapshot: PinnedSnapshot; created: boolean } | null> {
   if (typeof tab.id !== "number") return null;
   await ensureSnapshotCache();
   const existing = pinnedSnapshotCache.get(tab.id);
-  const current = tabToSnapshot(tab);
+  const current = tabToSnapshot(tab, existing?.id);
   if (existing) {
+    if (!existing.id && current?.id) {
+      existing.id = current.id;
+    }
     if (current && current.url === existing.url) {
       let updated = false;
       if (!existing.title && current.title) {
@@ -198,9 +210,10 @@ async function ensureSnapshotForTab(
     return { snapshot: existing, created: false };
   }
   if (!current) return null;
-  pinnedSnapshotCache.set(tab.id, current);
+  const nextSnapshot = current.id ? current : { ...current, id: generateId() };
+  pinnedSnapshotCache.set(tab.id, nextSnapshot);
   await persistSnapshotCache();
-  return { snapshot: current, created: true };
+  return { snapshot: nextSnapshot, created: true };
 }
 
 async function seedSnapshotsFromPinnedTabs(): Promise<void> {
@@ -214,7 +227,8 @@ async function seedSnapshotsFromPinnedTabs(): Promise<void> {
     if (pinnedSnapshotCache.has(tab.id)) continue;
     const snapshot = tabToSnapshot(tab);
     if (!snapshot) continue;
-    pinnedSnapshotCache.set(tab.id, snapshot);
+    const nextSnapshot = snapshot.id ? snapshot : { ...snapshot, id: generateId() };
+    pinnedSnapshotCache.set(tab.id, nextSnapshot);
     changed = true;
   }
   for (const id of pinnedSnapshotCache.keys()) {
@@ -316,6 +330,11 @@ function getLastFocusedWindowId(): Promise<number | undefined> {
   });
 }
 
+async function hasPinnedTabs(windowId: number): Promise<boolean> {
+  const tabs = await queryTabs({ windowId, pinned: true });
+  return tabs.length > 0;
+}
+
 function normalizeUrl(tab: TabInfo | undefined): string | undefined {
   if (!tab) return undefined;
   const url = tab.pendingUrl ?? tab.url ?? "";
@@ -336,7 +355,12 @@ function getSnapshotUrl(tab: TabInfo): string | undefined {
 function getTabMatchKey(tab: TabInfo, groupId?: string): string | undefined {
   const url = getSnapshotUrl(tab);
   if (!url) return undefined;
-  return groupId ? hashPinnedItemId(groupId, url) : url;
+  if (groupId && tab.id !== undefined) {
+    const snapshot = pinnedSnapshotCache.get(tab.id);
+    if (snapshot?.id) return snapshot.id;
+    return hashPinnedItemId(groupId, url);
+  }
+  return url;
 }
 
 function isBlankNewTab(tab: TabInfo | undefined): boolean {
@@ -345,14 +369,17 @@ function isBlankNewTab(tab: TabInfo | undefined): boolean {
   return url === "about:blank" || url.startsWith("chrome://newtab");
 }
 
-function parseSuspendedUrl(rawUrl: string): { targetUrl?: string; title?: string; faviconUrl?: string } | null {
+function parseSuspendedUrl(
+  rawUrl: string
+): { targetUrl?: string; title?: string; faviconUrl?: string; snapshotId?: string } | null {
   if (!rawUrl.startsWith(SUSPENDED_PAGE)) return null;
   try {
     const url = new URL(rawUrl);
     const targetUrl = url.searchParams.get("target") ?? undefined;
     const title = url.searchParams.get("title") ?? undefined;
     const faviconUrl = url.searchParams.get("favicon") ?? undefined;
-    return { targetUrl, title, faviconUrl };
+    const snapshotId = url.searchParams.get("id") ?? undefined;
+    return { targetUrl, title, faviconUrl, snapshotId };
   } catch {
     return null;
   }
@@ -383,14 +410,17 @@ function buildSuspendedUrl(item: PinnedSnapshot): string {
   if (item.title) url.searchParams.set("title", item.title);
   const normalizedFavicon = normalizeFaviconUrl(item.faviconUrl, item.url);
   if (normalizedFavicon) url.searchParams.set("favicon", normalizedFavicon);
+  if (item.id) url.searchParams.set("id", item.id);
   return url.toString();
 }
 
-function tabToSnapshot(tab: TabInfo): PinnedSnapshot | null {
+function tabToSnapshot(tab: TabInfo, fallbackId?: string): PinnedSnapshot | null {
   const url = normalizeUrl(tab);
   if (!url) return null;
   const suspended = tab.url ? parseSuspendedUrl(tab.url) : null;
+  const snapshotId = suspended?.snapshotId ?? fallbackId;
   const item: PinnedSnapshot = {
+    id: snapshotId,
     url,
     title: suspended?.title ?? tab.title,
     faviconUrl: normalizeFaviconUrl(suspended?.faviconUrl ?? tab.favIconUrl, url),
@@ -428,8 +458,9 @@ function dedupeItems(items: PinnedItem[]): PinnedItem[] {
 }
 
 function snapshotToPinnedItem(snapshot: PinnedSnapshot, groupId: string): PinnedItem {
+  const id = snapshot.id && snapshot.id.trim() ? snapshot.id : hashPinnedItemId(groupId, snapshot.url);
   return {
-    id: hashPinnedItemId(groupId, snapshot.url),
+    id,
     url: snapshot.url,
     title: snapshot.title,
     faviconUrl: snapshot.faviconUrl,
@@ -532,6 +563,37 @@ function isWindowLocked(localState: Awaited<ReturnType<typeof getLocalState>>, w
   return Boolean(localState.windowGroupLockMap?.[String(windowId)]);
 }
 
+function hasWindowMapping(localState: Awaited<ReturnType<typeof getLocalState>>, windowId: number): boolean {
+  return Boolean(localState.windowGroupMap?.[String(windowId)]);
+}
+
+function hasMissingPinnedItems(current: PinnedItem[], desired: PinnedItem[]): boolean {
+  if (desired.length === 0) return false;
+  if (current.length === 0) return true;
+  const idCounts = new Map<string, number>();
+  const urlCounts = new Map<string, number>();
+  for (const item of current) {
+    if (item.id) {
+      idCounts.set(item.id, (idCounts.get(item.id) ?? 0) + 1);
+    }
+    urlCounts.set(item.url, (urlCounts.get(item.url) ?? 0) + 1);
+  }
+  for (const item of desired) {
+    const idCount = item.id ? idCounts.get(item.id) ?? 0 : 0;
+    if (idCount > 0) {
+      idCounts.set(item.id, idCount - 1);
+      continue;
+    }
+    const urlCount = urlCounts.get(item.url) ?? 0;
+    if (urlCount > 0) {
+      urlCounts.set(item.url, urlCount - 1);
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 async function updateGroupItems(
   groupId: string,
   items: PinnedItem[]
@@ -589,6 +651,8 @@ async function applyGroupToWindow(
     const unpinnedTabs = tabs.filter((tab) => !tab.pinned);
     const availablePinned = new Map<string, TabInfo[]>();
     const availableUnpinned = new Map<string, TabInfo[]>();
+    const availablePinnedByUrl = new Map<string, TabInfo[]>();
+    const availableUnpinnedByUrl = new Map<string, TabInfo[]>();
 
     for (const tab of pinnedTabs) {
       const key = getTabMatchKey(tab, options.groupId);
@@ -596,6 +660,12 @@ async function applyGroupToWindow(
       const list = availablePinned.get(key) ?? [];
       list.push(tab);
       availablePinned.set(key, list);
+      const url = getSnapshotUrl(tab);
+      if (url) {
+        const urlList = availablePinnedByUrl.get(url) ?? [];
+        urlList.push(tab);
+        availablePinnedByUrl.set(url, urlList);
+      }
     }
 
     for (const tab of unpinnedTabs) {
@@ -604,11 +674,17 @@ async function applyGroupToWindow(
       const list = availableUnpinned.get(key) ?? [];
       list.push(tab);
       availableUnpinned.set(key, list);
+      const url = getSnapshotUrl(tab);
+      if (url) {
+        const urlList = availableUnpinnedByUrl.get(url) ?? [];
+        urlList.push(tab);
+        availableUnpinnedByUrl.set(url, urlList);
+      }
     }
 
     const keepTabIds = new Set<number>();
     const orderedTabIds: number[] = [];
-    const createdUrls = new Set<string>();
+    const createdIds = new Set<string>();
 
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
@@ -619,6 +695,10 @@ async function applyGroupToWindow(
       if (existingPinned?.id !== undefined) {
         keepTabIds.add(existingPinned.id);
         orderedTabIds.push(existingPinned.id);
+        const snapshot = pinnedSnapshotCache.get(existingPinned.id) ?? tabToSnapshot(existingPinned, item.id);
+        if (snapshot) {
+          await setSnapshotForTab(existingPinned.id, { ...snapshot, id: item.id, url: item.url });
+        }
         continue;
       }
 
@@ -630,12 +710,41 @@ async function applyGroupToWindow(
         pinnedTabIds.add(existingUnpinned.id);
         keepTabIds.add(existingUnpinned.id);
         orderedTabIds.push(existingUnpinned.id);
+        const snapshot = pinnedSnapshotCache.get(existingUnpinned.id) ?? tabToSnapshot(existingUnpinned, item.id);
+        if (snapshot) {
+          await setSnapshotForTab(existingUnpinned.id, { ...snapshot, id: item.id, url: item.url });
+        }
         continue;
       }
 
-      const dedupeKey = item.url;
-      if (createdUrls.has(dedupeKey)) continue;
-      createdUrls.add(dedupeKey);
+      const urlFallback = item.url;
+      const fallbackPinned = availablePinnedByUrl.get(urlFallback)?.shift();
+      if (fallbackPinned?.id !== undefined) {
+        keepTabIds.add(fallbackPinned.id);
+        orderedTabIds.push(fallbackPinned.id);
+        const snapshot = pinnedSnapshotCache.get(fallbackPinned.id) ?? tabToSnapshot(fallbackPinned, item.id);
+        if (snapshot) {
+          await setSnapshotForTab(fallbackPinned.id, { ...snapshot, id: item.id, url: item.url });
+        }
+        continue;
+      }
+
+      const fallbackUnpinned = availableUnpinnedByUrl.get(urlFallback)?.shift();
+      if (fallbackUnpinned?.id !== undefined) {
+        await updateTabWithRetry(fallbackUnpinned.id, { pinned: true });
+        pinnedTabIds.add(fallbackUnpinned.id);
+        keepTabIds.add(fallbackUnpinned.id);
+        orderedTabIds.push(fallbackUnpinned.id);
+        const snapshot = pinnedSnapshotCache.get(fallbackUnpinned.id) ?? tabToSnapshot(fallbackUnpinned, item.id);
+        if (snapshot) {
+          await setSnapshotForTab(fallbackUnpinned.id, { ...snapshot, id: item.id, url: item.url });
+        }
+        continue;
+      }
+
+      const dedupeKey = item.id;
+      if (createdIds.has(dedupeKey)) continue;
+      createdIds.add(dedupeKey);
       const created = await createTabWithRetry({
         windowId,
         url: buildSuspendedUrl(item),
@@ -649,6 +758,12 @@ async function applyGroupToWindow(
         if (created.pinned) {
           pinnedTabCache.set(created.id, created);
         }
+        await setSnapshotForTab(created.id, {
+          id: item.id,
+          url: item.url,
+          title: item.title,
+          faviconUrl: item.faviconUrl,
+        });
       }
     }
 
@@ -824,8 +939,8 @@ async function applyGroupToMappedWindows(
       if (typeof window.id !== "number") continue;
       if (pendingWindowSync.has(window.id)) continue;
       if (typeof options.sourceWindowId === "number" && window.id === options.sourceWindowId) continue;
-      const resolvedId = getGroupIdForWindow(state, window.id, localState);
-      if (resolvedId !== groupId) continue;
+      const mappedId = localState.windowGroupMap?.[String(window.id)];
+      if (mappedId !== groupId) continue;
       await applyGroupToWindow(window.id, items, { mode: "additive", removedUrls: options.removedUrls, groupId });
     }
   } finally {
@@ -849,7 +964,11 @@ async function syncPinnedTabsFromWindow(
   const localState = await getLocalState();
   const locked = isWindowLocked(localState, windowId);
   let state = await ensureDefaultGroup();
-  if (!localState.windowGroupMap?.[String(windowId)] && !locked) {
+  const mapped = hasWindowMapping(localState, windowId);
+  if (!mapped && !locked) {
+    if (await hasPinnedTabs(windowId)) {
+      return;
+    }
     await scheduleWindowState(windowId);
     state = await ensureDefaultGroup();
   }
@@ -872,36 +991,6 @@ async function syncPinnedTabsFromWindow(
 }
 
 async function initializeSyncState(): Promise<void> {
-  const state = await getSyncState();
-  if (state.groups.length === 0) {
-    const items = await getPinnedItems({ pinned: true });
-    if (items.length > 0) {
-      const now = Date.now();
-      const seededGroupId = generateId();
-      const seededItems = assignItemIds(items, seededGroupId);
-      const seededGroup: PinnedGroup = {
-        id: seededGroupId,
-        name: "",
-        items: seededItems,
-        createdAt: now,
-        updatedAt: now,
-        order: 0,
-      };
-      const nextState: SyncStateV1 = {
-        version: 1,
-        groups: [seededGroup],
-        defaultGroupId: seededGroup.id,
-      };
-      await markLocalWrite();
-      await setSyncState(nextState);
-      await setActiveGroupId(seededGroup.id);
-      await applyGroupToAllWindows(seededItems, { groupId: seededGroupId });
-      await seedPinnedTabIds();
-      await seedSnapshotsFromPinnedTabs();
-      return;
-    }
-  }
-
   await ensureDefaultGroup();
   await seedPinnedTabIds();
   await seedSnapshotsFromPinnedTabs();
@@ -923,7 +1012,54 @@ async function maybeRestoreDefaultGroup(
   const group = nextState.groups.find((candidate) => candidate.id === nextState.defaultGroupId);
   if (!group || group.items.length === 0) return;
 
+  if (nextState.defaultGroupId) {
+    await setWindowGroupId(windowId, nextState.defaultGroupId);
+  }
   await applyGroupToWindow(windowId, group.items, { mode: "exact", groupId: group.id });
+}
+
+async function syncMappedWindowsFromLocal(): Promise<void> {
+  await ensureSnapshotCache();
+  const [windows, localState, state] = await Promise.all([getAllWindows(), getLocalState(), ensureDefaultGroup()]);
+  const groupById = new Map(state.groups.map((group) => [group.id, group]));
+  for (const window of windows) {
+    if (typeof window.id !== "number") continue;
+    const mappedId = localState.windowGroupMap?.[String(window.id)];
+    if (!mappedId) continue;
+    if (!groupById.has(mappedId)) continue;
+    const items = await getPinnedItems({ windowId: window.id, pinned: true }, mappedId);
+    if (items.length === 0) continue;
+    await updateGroupItems(mappedId, items);
+  }
+}
+
+async function restoreMappedWindowsFromGroup(): Promise<void> {
+  await ensureSnapshotCache();
+  const [windows, localState, state] = await Promise.all([getAllWindows(), getLocalState(), ensureDefaultGroup()]);
+  const groupById = new Map(state.groups.map((group) => [group.id, group]));
+  for (const window of windows) {
+    if (typeof window.id !== "number") continue;
+    const mappedId = localState.windowGroupMap?.[String(window.id)];
+    if (!mappedId) continue;
+    const group = groupById.get(mappedId);
+    if (!group) continue;
+    const items = await getPinnedItems({ windowId: window.id, pinned: true }, mappedId);
+    if (!hasMissingPinnedItems(items, group.items)) continue;
+    suppressedSyncByWindow.set(window.id, Date.now() + 1500);
+    suppressCloseToSuspend(window.id);
+    await applyGroupToWindow(window.id, group.items, { mode: "additive", groupId: group.id });
+  }
+}
+
+async function finalizeInitialization(): Promise<void> {
+  if (!initializationPromise) {
+    initializationPromise = (async () => {
+      await syncMappedWindowsFromLocal();
+      await restoreMappedWindowsFromGroup();
+      isInitializing = false;
+    })();
+  }
+  await initializationPromise;
 }
 
 async function handleWindowState(windowId: number | undefined): Promise<void> {
@@ -950,6 +1086,7 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
       return;
     }
     await clearWindowGroupId(windowId);
+    await clearWindowGroupLock(windowId);
   }
 
   const items = await getPinnedItems({ windowId, pinned: true });
@@ -962,35 +1099,7 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
     await maybeRestoreDefaultGroup(windowId, state);
     return;
   }
-
-  const matchingGroup = findMatchingGroup(state.groups, items);
-
-  if (matchingGroup) {
-    await setActiveGroupId(matchingGroup.id);
-    await setWindowGroupId(windowId, matchingGroup.id);
-    await updateGroupItems(matchingGroup.id, assignItemIds(items, matchingGroup.id));
-    return;
-  }
-
-  const now = Date.now();
-  const newGroupId = generateId();
-  const newItems = assignItemIds(items, newGroupId);
-  const newGroup: PinnedGroup = {
-    id: newGroupId,
-    name: "",
-    items: newItems,
-    createdAt: now,
-    updatedAt: now,
-    order: getNextGroupOrder(state),
-  };
-  const nextState: SyncStateV1 = {
-    ...state,
-    groups: [...state.groups, newGroup],
-  };
-  await markLocalWrite();
-  await setSyncState(nextState);
-  await setActiveGroupId(newGroup.id);
-  await setWindowGroupId(windowId, newGroup.id);
+  return;
 }
 
 async function scheduleWindowState(windowId: number | undefined): Promise<void> {
@@ -1151,28 +1260,31 @@ chrome.commands.onCommand.addListener((command: string) => {
 chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => {
   if (isApplyingGroup) return;
   void (async () => {
-    await removeSnapshotForTab(tabId);
     const wasPinned = pinnedTabIds.has(tabId);
     if (wasPinned) {
       pinnedTabIds.delete(tabId);
     }
     if (removeInfo.isWindowClosing) {
+      await removeSnapshotForTab(tabId);
       return;
     }
     if (!wasPinned) return;
     if (intentionalRemovals.has(tabId)) {
       intentionalRemovals.delete(tabId);
       pinnedTabCache.delete(tabId);
+      await removeSnapshotForTab(tabId);
       return;
     }
     if (closePinnedToSuspend && !isCloseToSuspendSuppressed(removeInfo.windowId)) {
+      await ensureSnapshotCache();
       const cached = pinnedTabCache.get(tabId);
       pinnedTabCache.delete(tabId);
-      if (cached) {
-        const item = tabToSnapshot(cached);
+      const snapshot = pinnedSnapshotCache.get(tabId) ?? (cached ? tabToSnapshot(cached) : null);
+      if (snapshot) {
+        const item = snapshot;
         if (item) {
-          const windowId = typeof cached.windowId === "number" ? cached.windowId : removeInfo.windowId;
-          const index = typeof cached.index === "number" ? cached.index : 0;
+          const windowId = cached && typeof cached.windowId === "number" ? cached.windowId : removeInfo.windowId;
+          const index = cached && typeof cached.index === "number" ? cached.index : 0;
           const created = await createTabWithRetry({
             windowId,
             url: buildSuspendedUrl(item),
@@ -1185,14 +1297,17 @@ chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => 
             if (created.pinned) {
               pinnedTabCache.set(created.id, created);
             }
+            await setSnapshotForTab(created.id, item);
             skipNextActivation.add(created.id);
           }
+          await removeSnapshotForTab(tabId);
           return;
         }
       }
     } else {
       pinnedTabCache.delete(tabId);
     }
+    await removeSnapshotForTab(tabId);
     await syncPinnedTabsFromWindow(removeInfo.windowId, { allowEmpty: true });
   })();
 });
@@ -1234,6 +1349,7 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
   }
   if (areaName !== "sync" || !changes[SYNC_KEY]) return;
   void (async () => {
+    if (isInitializing) return;
     const recentLocalWrite = await wasRecentLocalWrite();
     if (recentLocalWrite) return;
 
@@ -1245,42 +1361,27 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
     const localState = await getLocalState();
     const validIds = new Set(state.groups.map((group) => group.id));
     const windowGroupMap = { ...(localState.windowGroupMap ?? {}) };
-    const remappedWindows = new Set<number>();
+    const windowGroupLockMap = { ...(localState.windowGroupLockMap ?? {}) };
     let mapChanged = false;
 
     for (const [key, value] of Object.entries(windowGroupMap)) {
       if (validIds.has(value)) continue;
       mapChanged = true;
-      if (state.defaultGroupId) {
-        windowGroupMap[key] = state.defaultGroupId;
-        remappedWindows.add(Number(key));
-      } else {
-        delete windowGroupMap[key];
-      }
+      delete windowGroupMap[key];
+      delete windowGroupLockMap[key];
     }
 
     if (mapChanged) {
-      await updateLocalState({ windowGroupMap });
+      await updateLocalState({ windowGroupMap, windowGroupLockMap });
     }
 
     const windows = await getAllWindows();
     for (const window of windows) {
       if (typeof window.id !== "number") continue;
-      const groupId = getGroupIdForWindow(state, window.id, { ...localState, windowGroupMap });
-      const group = state.groups.find((candidate) => candidate.id === groupId);
+      const mappedId = windowGroupMap[String(window.id)];
+      if (!mappedId) continue;
+      const group = state.groups.find((candidate) => candidate.id === mappedId);
       if (!group) continue;
-      if (remappedWindows.has(window.id) && state.defaultGroupId) {
-        const defaultGroup = state.groups.find((candidate) => candidate.id === state.defaultGroupId);
-        if (defaultGroup) {
-          suppressCloseToSuspend(window.id);
-          await applyGroupToWindow(window.id, defaultGroup.items, {
-            mode: "exact",
-            forceCloseExtras: true,
-            groupId: defaultGroup.id,
-          });
-          continue;
-        }
-      }
       await applyGroupToWindow(window.id, group.items, { mode: "exact", groupId: group.id });
     }
   })();
@@ -1346,33 +1447,57 @@ chrome.runtime.onMessage.addListener(
     return true;
   }
 
+  if (message?.type === "pinstack:refresh-group") {
+    if (typeof message.windowId !== "number" || typeof message.groupId !== "string") return;
+    const windowId = message.windowId;
+    const groupId = message.groupId;
+    void (async () => {
+      try {
+        const [state, localState] = await Promise.all([ensureDefaultGroup(), getLocalState()]);
+        const mappedId = localState.windowGroupMap?.[String(windowId)];
+        if (mappedId !== groupId) {
+          sendResponse({ ok: false });
+          return;
+        }
+        const group = state.groups.find((candidate) => candidate.id === groupId);
+        if (!group) {
+          sendResponse({ ok: false });
+          return;
+        }
+        suppressedSyncByWindow.set(windowId, Date.now() + 1500);
+        suppressCloseToSuspend(windowId);
+        await applyGroupToWindow(windowId, group.items, { mode: "exact", groupId: group.id });
+        sendResponse({ ok: true });
+      } catch {
+        sendResponse({ ok: false });
+      }
+    })();
+    return true;
+  }
+
   if (message?.type === "pinstack:group-deleted") {
     if (typeof message.groupId !== "string") return;
     const deletedGroupId = message.groupId;
     void (async () => {
-      const state = await ensureDefaultGroup();
-      const defaultId = state.defaultGroupId;
-      if (!defaultId) return;
       const localState = await getLocalState();
       const windowGroupMap = { ...(localState.windowGroupMap ?? {}) };
-      const windows = await getAllWindows();
-      const defaultGroup = state.groups.find((candidate) => candidate.id === defaultId);
-      if (!defaultGroup) return;
+      const windowGroupLockMap = { ...(localState.windowGroupLockMap ?? {}) };
+      let changed = false;
 
-      for (const window of windows) {
-        if (typeof window.id !== "number") continue;
-        const mappedId = windowGroupMap[String(window.id)];
-        if (mappedId !== deletedGroupId) continue;
-        windowGroupMap[String(window.id)] = defaultId;
-        suppressCloseToSuspend(window.id);
-        await applyGroupToWindow(window.id, defaultGroup.items, {
-          mode: "exact",
-          forceCloseExtras: true,
-          groupId: defaultGroup.id,
-        });
+      for (const [key, value] of Object.entries(windowGroupMap)) {
+        if (value !== deletedGroupId) continue;
+        delete windowGroupMap[key];
+        delete windowGroupLockMap[key];
+        changed = true;
       }
 
-      await updateLocalState({ windowGroupMap });
+      if (localState.activeGroupId === deletedGroupId) {
+        await setActiveGroupId(undefined);
+      }
+
+      if (changed) {
+        await updateLocalState({ windowGroupMap, windowGroupLockMap });
+      }
     })();
   }
 });
@@ -1384,6 +1509,7 @@ chrome.runtime.onInstalled.addListener(() => {
     await loadPreferences();
     await initializeSyncState();
     await handleLastFocusedWindow();
+    await finalizeInitialization();
   })();
 });
 
@@ -1393,6 +1519,7 @@ chrome.runtime.onStartup.addListener(() => {
     await initializeSyncState();
     await handleLastFocusedWindow();
     await maybeRestoreDefaultGroupInAllWindows();
+    await finalizeInitialization();
   })();
 });
 
@@ -1400,4 +1527,5 @@ void (async () => {
   await loadPreferences();
   await initializeSyncState();
   await handleLastFocusedWindow();
+  await finalizeInitialization();
 })();

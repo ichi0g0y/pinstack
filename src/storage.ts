@@ -151,9 +151,11 @@ function normalizeSnapshotState(raw: unknown): SnapshotStateV1 {
     if (!value || typeof value !== "object") continue;
     const snapshot = value as PinnedSnapshot;
     if (typeof snapshot.url !== "string" || !snapshot.url.trim()) continue;
+    if ("id" in snapshot && typeof snapshot.id !== "string") continue;
     if ("title" in snapshot && typeof snapshot.title !== "string") continue;
     if ("faviconUrl" in snapshot && typeof snapshot.faviconUrl !== "string") continue;
     snapshots[key] = {
+      id: typeof snapshot.id === "string" && snapshot.id.trim() ? snapshot.id : undefined,
       url: snapshot.url.trim(),
       title: typeof snapshot.title === "string" ? snapshot.title : undefined,
       faviconUrl: typeof snapshot.faviconUrl === "string" ? snapshot.faviconUrl : undefined,
@@ -164,6 +166,17 @@ function normalizeSnapshotState(raw: unknown): SnapshotStateV1 {
 
 export function generateId(): string {
   return nanoid();
+}
+
+function pickFallbackDefault(groups: PinnedGroup[]): string | undefined {
+  if (groups.length === 0) return undefined;
+  const sorted = [...groups].sort((a, b) => {
+    const orderA = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
+    const orderB = typeof b.order === "number" ? b.order : Number.POSITIVE_INFINITY;
+    if (orderA !== orderB) return orderA - orderB;
+    return b.createdAt - a.createdAt;
+  });
+  return sorted[0]?.id;
 }
 
 export async function getSyncState(): Promise<SyncStateV1> {
@@ -263,22 +276,14 @@ export async function ensureDefaultGroup(): Promise<SyncStateV1> {
   const orderAssignments = new Map<string, number>();
 
   if (!hasDefault) {
-    const now = Date.now();
-    const defaultGroup: PinnedGroup = {
-      id: generateId(),
-      name: "",
-      items: [],
-      createdAt: now,
-      updatedAt: now,
-      order: 0,
-    };
-
-    nextState = {
-      version: 1,
-      groups: [...state.groups, defaultGroup],
-      defaultGroupId: defaultGroup.id,
-    };
-    needsWrite = true;
+    const fallbackId = pickFallbackDefault(state.groups);
+    if (fallbackId) {
+      nextState = {
+        ...state,
+        defaultGroupId: fallbackId,
+      };
+      needsWrite = true;
+    }
   }
 
   const groups = nextState.groups;

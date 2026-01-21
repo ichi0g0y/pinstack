@@ -12,7 +12,6 @@ import {
   updateLocalState,
   updatePreferences,
 } from "./storage.js";
-import { hashPinnedItemId } from "./id.js";
 import type { PinnedGroup, PinnedItem, PinnedSnapshot, SyncStateV1 } from "./types.js";
 
 type TabInfo = { id?: number; url?: string; pendingUrl?: string; title?: string; favIconUrl?: string };
@@ -80,15 +79,18 @@ function dedupeItems(items: PinnedItemInput[]): PinnedItemInput[] {
 }
 
 function snapshotToPinnedItem(snapshot: PinnedSnapshot, groupId: string): PinnedItem {
+  const id = snapshot.id && snapshot.id.trim() ? snapshot.id : generateId();
   return {
-    id: hashPinnedItemId(groupId, snapshot.url),
+    id,
     url: snapshot.url,
     title: snapshot.title,
     faviconUrl: snapshot.faviconUrl,
   };
 }
 
-function parseSuspendedUrl(rawUrl: string): { targetUrl?: string; title?: string; faviconUrl?: string } | null {
+function parseSuspendedUrl(
+  rawUrl: string
+): { targetUrl?: string; title?: string; faviconUrl?: string; snapshotId?: string } | null {
   const baseUrl = chrome.runtime.getURL("suspended.html");
   if (!rawUrl.startsWith(baseUrl)) return null;
   try {
@@ -96,7 +98,8 @@ function parseSuspendedUrl(rawUrl: string): { targetUrl?: string; title?: string
     const targetUrl = url.searchParams.get("target") ?? undefined;
     const title = url.searchParams.get("title") ?? undefined;
     const faviconUrl = url.searchParams.get("favicon") ?? undefined;
-    return { targetUrl, title, faviconUrl };
+    const snapshotId = url.searchParams.get("id") ?? undefined;
+    return { targetUrl, title, faviconUrl, snapshotId };
   } catch {
     return null;
   }
@@ -121,7 +124,7 @@ function normalizeFaviconUrl(input: string | undefined, targetUrl: string): stri
   return buildFaviconFallback(targetUrl);
 }
 
-function tabToSnapshot(tab: TabInfo): PinnedSnapshot | null {
+function tabToSnapshot(tab: TabInfo, fallbackId?: string): PinnedSnapshot | null {
   const rawUrl = tab.url ?? tab.pendingUrl ?? "";
   if (!rawUrl || rawUrl === "about:blank" || rawUrl.startsWith("chrome://newtab")) return null;
   const suspended = parseSuspendedUrl(rawUrl);
@@ -129,7 +132,9 @@ function tabToSnapshot(tab: TabInfo): PinnedSnapshot | null {
   if (!url) return null;
   const title = suspended?.title ?? tab.title;
   const faviconUrl = normalizeFaviconUrl(suspended?.faviconUrl ?? tab.favIconUrl, url);
+  const snapshotId = suspended?.snapshotId ?? fallbackId;
   return {
+    id: snapshotId,
     url,
     title: title ?? undefined,
     faviconUrl: faviconUrl ?? undefined,
@@ -177,7 +182,13 @@ async function renderPreferences(): Promise<void> {
 }
 
 async function renderGroups(): Promise<void> {
-  const [state, localState] = await Promise.all([ensureDefaultGroup(), getLocalState()]);
+  const [state, localState, windowId] = await Promise.all([
+    ensureDefaultGroup(),
+    getLocalState(),
+    new Promise<number | undefined>((resolve) => {
+      chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
+    }),
+  ]);
   const activeGroupId =
     localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)
       ? localState.activeGroupId
@@ -186,6 +197,11 @@ async function renderGroups(): Promise<void> {
   if (localState.activeGroupId && localState.activeGroupId !== activeGroupId) {
     await setActiveGroupId(undefined);
   }
+
+  const mappedGroupId =
+    typeof windowId === "number" ? localState.windowGroupMap?.[String(windowId)] : undefined;
+  const currentGroupId =
+    mappedGroupId && state.groups.some((group) => group.id === mappedGroupId) ? mappedGroupId : undefined;
   const groups = sortGroups(state);
 
   groupsListEl.innerHTML = "";
@@ -197,8 +213,8 @@ async function renderGroups(): Promise<void> {
   emptyStateEl.hidden = true;
   groups.forEach((group) => {
     const isDefault = group.id === state.defaultGroupId;
-    const isActive = group.id === activeGroupId;
-    groupsListEl.appendChild(createGroupCard(group, { isDefault, isActive }));
+    const isMapped = group.id === currentGroupId;
+    groupsListEl.appendChild(createGroupCard(group, { isDefault, isMapped }));
   });
 }
 
@@ -211,13 +227,13 @@ function createBadge(label: string, variant?: "accent"): HTMLSpanElement {
 
 function createGroupCard(
   group: PinnedGroup,
-  { isDefault, isActive }: { isDefault: boolean; isActive: boolean }
+  { isDefault, isMapped }: { isDefault: boolean; isMapped: boolean }
 ): HTMLElement {
   const card = document.createElement("article");
   card.className = "group-card";
   card.dataset.id = group.id;
   card.dataset.default = isDefault ? "true" : "false";
-  card.dataset.active = isActive ? "true" : "false";
+  card.dataset.mapped = isMapped ? "true" : "false";
   card.draggable = !isDefault;
 
   const header = document.createElement("div");
@@ -233,11 +249,11 @@ function createGroupCard(
     badges.append(createBadge("Default"));
   }
 
-  if (isActive) {
-    badges.append(createBadge("Current", "accent"));
+  if (isMapped) {
+    badges.append(createBadge("Current window", "accent"));
   }
 
-  if (!isDefault && !isActive) {
+  if (!isDefault && !isMapped) {
     badges.append(createBadge("Saved"));
   }
 
@@ -259,11 +275,11 @@ function createGroupCard(
 
   const setActiveButton = document.createElement("button");
   setActiveButton.type = "button";
-  setActiveButton.textContent = isActive ? "Current" : "Switch";
+  setActiveButton.textContent = isMapped ? "Current" : "Switch";
   setActiveButton.dataset.action = "set-active";
   setActiveButton.dataset.id = group.id;
-  setActiveButton.disabled = isActive;
-  if (!isActive) {
+  setActiveButton.disabled = isMapped;
+  if (!isMapped) {
     setActiveButton.className = "primary";
   }
 
@@ -274,7 +290,7 @@ function createGroupCard(
   deleteButton.dataset.id = group.id;
   deleteButton.className = "danger";
 
-  if (isActive) {
+  if (isMapped) {
     const refreshButton = document.createElement("button");
     refreshButton.type = "button";
     refreshButton.textContent = "Refresh pins";
@@ -284,7 +300,14 @@ function createGroupCard(
     actions.append(refreshButton);
   }
 
-  actions.append(setActiveButton, setDefaultButton, deleteButton);
+  const renameButton = document.createElement("button");
+  renameButton.type = "button";
+  renameButton.textContent = "Rename";
+  renameButton.dataset.action = "rename";
+  renameButton.dataset.id = group.id;
+  renameButton.className = "secondary";
+
+  actions.append(setActiveButton, setDefaultButton, renameButton, deleteButton);
   card.append(header, meta, actions);
 
   return card;
@@ -309,11 +332,12 @@ async function getPinnedItemsFromCurrentWindow(options: { refreshSnapshots?: boo
       items.push(stored);
       continue;
     }
-    const snapshot = tabToSnapshot(tab);
+    const snapshot = tabToSnapshot(tab, stored?.id);
     if (!snapshot) continue;
-    items.push(snapshot);
+    const nextSnapshot = snapshot.id ? snapshot : { ...snapshot, id: generateId() };
+    items.push(nextSnapshot);
     if (key) {
-      snapshots[key] = snapshot;
+      snapshots[key] = nextSnapshot;
       changed = true;
     }
   }
@@ -441,10 +465,16 @@ async function deleteGroup(groupId: string): Promise<void> {
   const [state, localState] = await Promise.all([ensureDefaultGroup(), getLocalState()]);
   const nextGroups = state.groups.filter((group) => group.id !== groupId);
 
+  let nextDefaultId = state.defaultGroupId === groupId ? undefined : state.defaultGroupId;
+  if (!nextDefaultId && nextGroups.length > 0) {
+    const sorted = sortGroups({ ...state, groups: nextGroups, defaultGroupId: undefined });
+    nextDefaultId = sorted[0]?.id;
+  }
+
   const nextState: SyncStateV1 = {
     ...state,
     groups: nextGroups,
-    defaultGroupId: state.defaultGroupId === groupId ? undefined : state.defaultGroupId,
+    defaultGroupId: nextDefaultId,
   };
 
   await markLocalWrite();
@@ -453,29 +483,40 @@ async function deleteGroup(groupId: string): Promise<void> {
   if (localState.activeGroupId === groupId) {
     await setActiveGroupId(undefined);
   }
-  const ensured = await ensureDefaultGroup();
-  const nextDefaultId = ensured.defaultGroupId;
-  if (nextDefaultId) {
-    await setActiveGroupId(nextDefaultId);
-    const windowId = await new Promise<number | undefined>((resolve) => {
-      chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
-    });
-    if (typeof windowId === "number") {
-      await setWindowGroupId(windowId, nextDefaultId);
-      chrome.runtime.sendMessage({
-        type: "pinstack:apply-default-group",
-        windowId,
-        groupId: nextDefaultId,
-        suppressSync: true,
-        suppressCloseToSuspend: true,
-      });
-    }
-  }
   chrome.runtime.sendMessage({
     type: "pinstack:group-deleted",
     groupId,
   });
-  setStatus("Group deleted. Default is now syncing here.");
+  setStatus("Group deleted.");
+  await renderGroups();
+}
+
+async function renameGroup(groupId: string): Promise<void> {
+  const state = await ensureDefaultGroup();
+  const target = state.groups.find((group) => group.id === groupId);
+  if (!target) return;
+  const nextName = window.prompt("Rename group", target.name);
+  if (nextName === null) return;
+  const trimmed = nextName.trim();
+  const nextGroups = state.groups.map((group) =>
+    group.id === groupId
+      ? {
+          ...group,
+          name: trimmed,
+          updatedAt: Date.now(),
+        }
+      : group
+  );
+
+  const nextState: SyncStateV1 = {
+    ...state,
+    groups: nextGroups,
+  };
+
+  await markLocalWrite();
+  await setSyncState(nextState);
+  await clearRemoteNotice();
+  setStatus("Group renamed.");
   await renderGroups();
 }
 
@@ -507,7 +548,27 @@ async function setActiveGroup(groupId: string): Promise<void> {
 
 async function refreshPinnedTabs(groupId: string): Promise<void> {
   setStatus("Refreshing pinned tabs…");
-  await syncGroupFromPinnedTabs(groupId, { refreshSnapshots: true });
+  const windowId = await new Promise<number | undefined>((resolve) => {
+    chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
+  });
+  if (typeof windowId !== "number") {
+    setStatus("Failed to refresh pins.", "error");
+    return;
+  }
+  const result = await new Promise<{ ok?: boolean }>((resolve) => {
+    chrome.runtime.sendMessage(
+      {
+        type: "pinstack:refresh-group",
+        windowId,
+        groupId,
+      },
+      (response: { ok?: boolean } | undefined) => resolve(response ?? {})
+    );
+  });
+  if (!result.ok) {
+    setStatus("Failed to refresh pins.", "error");
+    return;
+  }
   await renderGroups();
   setStatus("Pinned tabs refreshed.");
 }
@@ -562,6 +623,10 @@ groupsListEl.addEventListener("click", (event) => {
 
   if (target.dataset.action === "delete") {
     void deleteGroup(target.dataset.id);
+  }
+
+  if (target.dataset.action === "rename") {
+    void renameGroup(target.dataset.id);
   }
 
   if (target.dataset.action === "refresh") {

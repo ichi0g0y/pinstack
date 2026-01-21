@@ -1,6 +1,6 @@
 export type PinnedItem = { id: string; url: string; title?: string; faviconUrl?: string };
 
-export type PinnedSnapshot = { url: string; title?: string; faviconUrl?: string };
+export type PinnedSnapshot = { id?: string; url: string; title?: string; faviconUrl?: string };
 
 export type PinnedGroup = {
   id: string;
