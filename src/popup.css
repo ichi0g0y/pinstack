@@ -15,12 +15,22 @@
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
   min-width: 320px;
-  background: radial-gradient(circle at top left, #fff4e0 0%, var(--bg) 40%, var(--bg-2) 100%);
   color: var(--ink);
   font-family: "Georgia", "Palatino", "Times New Roman", serif;
+}
+
+html {
+  min-height: 100%;
+  background: var(--bg);
+}
+
+body {
+  min-height: 100%;
+  background: radial-gradient(circle at top left, #fff4e0 0%, var(--bg) 40%, var(--bg-2) 100%);
 }
 
 body::before,
@@ -317,15 +327,78 @@ button.danger {
   gap: 8px;
 }
 
+.group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.group-title-text {
+  margin: 0;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.group-title-input {
+  font-size: 15px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(27, 26, 22, 0.2);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  min-width: 160px;
+}
+
+.icon-button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.icon-button .icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.icon-button.primary {
+  background: rgba(213, 107, 47, 0.12);
+  color: var(--accent-dark);
+  box-shadow: none;
+}
+
+.icon-button.secondary {
+  border-color: rgba(27, 26, 22, 0.16);
+  box-shadow: none;
+}
+
+.icon-button.danger {
+  background: rgba(195, 74, 74, 0.12);
+  color: #8f1f1f;
+  box-shadow: none;
+}
+
+.icon-button:hover {
+  border-color: rgba(27, 26, 22, 0.12);
+  color: var(--ink);
+  background: rgba(27, 26, 22, 0.04);
+  transform: none;
+}
+
 .badges {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-}
-
-.group-header h3 {
-  margin: 0;
-  font-size: 15px;
 }
 
 .badge {

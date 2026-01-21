@@ -239,8 +239,35 @@ function createGroupCard(
   const header = document.createElement("div");
   header.className = "group-header";
 
+  const titleWrap = document.createElement("div");
+  titleWrap.className = "group-title";
+
   const title = document.createElement("h3");
+  title.className = "group-title-text";
   title.textContent = formatGroupName(group.name);
+
+  const titleInput = document.createElement("input");
+  titleInput.className = "group-title-input";
+  titleInput.type = "text";
+  titleInput.value = group.name;
+  titleInput.dataset.id = group.id;
+  titleInput.hidden = true;
+
+  const editButton = document.createElement("button");
+  editButton.type = "button";
+  editButton.className = "icon-button";
+  editButton.dataset.action = "rename-inline";
+  editButton.dataset.id = group.id;
+  editButton.setAttribute("aria-label", "Rename group");
+  const editIcon = document.createElement("img");
+  editIcon.src = "icons/pencil.svg";
+  editIcon.alt = "";
+  editIcon.setAttribute("aria-hidden", "true");
+  editIcon.className = "icon";
+
+  editButton.append(editIcon);
+
+  titleWrap.append(title, titleInput, editButton);
 
   const badges = document.createElement("div");
   badges.className = "badges";
@@ -249,15 +276,7 @@ function createGroupCard(
     badges.append(createBadge("Default"));
   }
 
-  if (isMapped) {
-    badges.append(createBadge("Current window", "accent"));
-  }
-
-  if (!isDefault && !isMapped) {
-    badges.append(createBadge("Saved"));
-  }
-
-  header.append(title, badges);
+  header.append(titleWrap, badges);
 
   const meta = document.createElement("p");
   meta.className = "group-meta";
@@ -268,47 +287,69 @@ function createGroupCard(
 
   const setDefaultButton = document.createElement("button");
   setDefaultButton.type = "button";
-  setDefaultButton.textContent = "Set default";
+  setDefaultButton.setAttribute("aria-label", "Set default");
+  setDefaultButton.title = "Set default";
   setDefaultButton.dataset.action = "set-default";
   setDefaultButton.dataset.id = group.id;
   setDefaultButton.disabled = isDefault;
+  setDefaultButton.className = "icon-button";
+  const setDefaultIcon = document.createElement("img");
+  setDefaultIcon.src = "icons/star.svg";
+  setDefaultIcon.alt = "";
+  setDefaultIcon.setAttribute("aria-hidden", "true");
+  setDefaultIcon.className = "icon";
+  setDefaultButton.append(setDefaultIcon);
 
   const setActiveButton = document.createElement("button");
   setActiveButton.type = "button";
-  setActiveButton.textContent = isMapped ? "Current" : "Switch";
+  setActiveButton.setAttribute("aria-label", "Switch");
+  setActiveButton.title = "Switch";
   setActiveButton.dataset.action = "set-active";
   setActiveButton.dataset.id = group.id;
-  setActiveButton.disabled = isMapped;
-  if (!isMapped) {
-    setActiveButton.className = "primary";
-  }
+  setActiveButton.className = "icon-button primary";
+  const setActiveIcon = document.createElement("img");
+  setActiveIcon.src = "icons/arrow-left-right.svg";
+  setActiveIcon.alt = "";
+  setActiveIcon.setAttribute("aria-hidden", "true");
+  setActiveIcon.className = "icon";
+  setActiveButton.append(setActiveIcon);
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
-  deleteButton.textContent = "Delete";
+  deleteButton.setAttribute("aria-label", "Delete");
+  deleteButton.title = "Delete";
   deleteButton.dataset.action = "delete";
   deleteButton.dataset.id = group.id;
-  deleteButton.className = "danger";
+  deleteButton.className = "icon-button danger";
+  const deleteIcon = document.createElement("img");
+  deleteIcon.src = "icons/trash-2.svg";
+  deleteIcon.alt = "";
+  deleteIcon.setAttribute("aria-hidden", "true");
+  deleteIcon.className = "icon";
+  deleteButton.append(deleteIcon);
 
   if (isMapped) {
     const refreshButton = document.createElement("button");
     refreshButton.type = "button";
-    refreshButton.textContent = "Refresh pins";
+    refreshButton.setAttribute("aria-label", "Refresh pins");
+    refreshButton.title = "Refresh pins";
     refreshButton.dataset.action = "refresh";
     refreshButton.dataset.id = group.id;
-    refreshButton.className = "secondary";
+    refreshButton.className = "icon-button secondary";
+    const refreshIcon = document.createElement("img");
+    refreshIcon.src = "icons/rotate-cw.svg";
+    refreshIcon.alt = "";
+    refreshIcon.setAttribute("aria-hidden", "true");
+    refreshIcon.className = "icon";
+    refreshButton.append(refreshIcon);
     actions.append(refreshButton);
   }
 
-  const renameButton = document.createElement("button");
-  renameButton.type = "button";
-  renameButton.textContent = "Rename";
-  renameButton.dataset.action = "rename";
-  renameButton.dataset.id = group.id;
-  renameButton.className = "secondary";
-
-  actions.append(setActiveButton, setDefaultButton, renameButton, deleteButton);
-  card.append(header, meta, actions);
+  if (!isMapped) {
+    actions.append(setActiveButton);
+  }
+  actions.append(setDefaultButton, deleteButton);
+  card.append(header, actions, meta);
 
   return card;
 }
@@ -491,13 +532,12 @@ async function deleteGroup(groupId: string): Promise<void> {
   await renderGroups();
 }
 
-async function renameGroup(groupId: string): Promise<void> {
+async function renameGroup(groupId: string, nextName: string): Promise<void> {
   const state = await ensureDefaultGroup();
   const target = state.groups.find((group) => group.id === groupId);
   if (!target) return;
-  const nextName = window.prompt("Rename group", target.name);
-  if (nextName === null) return;
   const trimmed = nextName.trim();
+  if (!trimmed || trimmed === target.name) return;
   const nextGroups = state.groups.map((group) =>
     group.id === groupId
       ? {
@@ -625,13 +665,71 @@ groupsListEl.addEventListener("click", (event) => {
     void deleteGroup(target.dataset.id);
   }
 
-  if (target.dataset.action === "rename") {
-    void renameGroup(target.dataset.id);
+  if (target.dataset.action === "rename-inline") {
+    const card = target.closest<HTMLElement>(".group-card");
+    if (!card) return;
+    const title = card.querySelector<HTMLElement>(".group-title-text");
+    const input = card.querySelector<HTMLInputElement>(".group-title-input");
+    const button = card.querySelector<HTMLElement>(".icon-button");
+    if (!title || !input || !button) return;
+    title.hidden = true;
+    button.hidden = true;
+    input.hidden = false;
+    input.value = input.value || title.textContent || "";
+    input.focus();
+    input.select();
   }
 
   if (target.dataset.action === "refresh") {
     void refreshPinnedTabs(target.dataset.id);
   }
+});
+
+groupsListEl.addEventListener("keydown", (event) => {
+  const target = event.target as HTMLElement;
+  if (!(target instanceof HTMLInputElement)) return;
+  if (!target.classList.contains("group-title-input")) return;
+  const card = target.closest<HTMLElement>(".group-card");
+  const title = card?.querySelector<HTMLElement>(".group-title-text");
+  const button = card?.querySelector<HTMLElement>(".icon-button");
+  if (!card || !title || !button) return;
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    target.hidden = true;
+    title.hidden = false;
+    button.hidden = false;
+    target.value = title.textContent ?? "";
+    return;
+  }
+
+  if (event.key === "Enter") {
+    event.preventDefault();
+    const groupId = target.dataset.id;
+    if (groupId) {
+      void renameGroup(groupId, target.value);
+    }
+    target.hidden = true;
+    title.hidden = false;
+    button.hidden = false;
+  }
+});
+
+groupsListEl.addEventListener("focusout", (event) => {
+  const target = event.target as HTMLElement;
+  if (!(target instanceof HTMLInputElement)) return;
+  if (!target.classList.contains("group-title-input")) return;
+  const card = target.closest<HTMLElement>(".group-card");
+  const title = card?.querySelector<HTMLElement>(".group-title-text");
+  const button = card?.querySelector<HTMLElement>(".icon-button");
+  if (!card || !title || !button) return;
+  const groupId = target.dataset.id;
+  if (groupId) {
+    void renameGroup(groupId, target.value);
+  }
+  target.hidden = true;
+  title.hidden = false;
+  button.hidden = false;
 });
 
 groupsListEl.addEventListener("dragstart", (event) => {
