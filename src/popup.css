@@ -302,6 +302,7 @@ button.danger {
 }
 
 .group-card[data-mapped="true"] {
+  border-width: 2px;
   border-color: rgba(213, 107, 47, 0.6);
   box-shadow: 0 10px 20px rgba(213, 107, 47, 0.14);
   background: linear-gradient(145deg, rgba(213, 107, 47, 0.08), rgba(255, 250, 241, 0.9));

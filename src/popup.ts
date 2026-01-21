@@ -348,7 +348,10 @@ function createGroupCard(
   if (!isMapped) {
     actions.append(setActiveButton);
   }
-  actions.append(setDefaultButton, deleteButton);
+  if (!isDefault) {
+    actions.append(setDefaultButton);
+  }
+  actions.append(deleteButton);
   card.append(header, actions, meta);
 
   return card;
@@ -650,19 +653,20 @@ async function persistGroupOrder(): Promise<void> {
 }
 
 groupsListEl.addEventListener("click", (event) => {
-  const target = event.target as HTMLElement;
-  if (!target.dataset.action || !target.dataset.id) return;
+  const target = (event.target as HTMLElement).closest<HTMLElement>("[data-action][data-id]");
+  if (!target?.dataset.id) return;
+  const targetId = target.dataset.id;
 
   if (target.dataset.action === "set-default") {
-    void setDefaultGroup(target.dataset.id);
+    void setDefaultGroup(targetId);
   }
 
   if (target.dataset.action === "set-active") {
-    void setActiveGroup(target.dataset.id);
+    void setActiveGroup(targetId);
   }
 
   if (target.dataset.action === "delete") {
-    void deleteGroup(target.dataset.id);
+    void deleteGroup(targetId);
   }
 
   if (target.dataset.action === "rename-inline") {
@@ -681,7 +685,7 @@ groupsListEl.addEventListener("click", (event) => {
   }
 
   if (target.dataset.action === "refresh") {
-    void refreshPinnedTabs(target.dataset.id);
+    void refreshPinnedTabs(targetId);
   }
 });
 
