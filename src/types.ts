@@ -25,9 +25,11 @@ export type LocalStateV1 = {
   closePinnedToSuspend?: boolean;
   windowGroupMap?: Record<string, string>;
   windowGroupLockMap?: Record<string, boolean>;
+  unmanagedWindowMap?: Record<string, boolean>;
 };
 
 export type PreferenceStateV1 = {
   version: 1;
   closePinnedToSuspend: boolean;
+  newWindowBehavior: "default" | "unmanaged";
 };

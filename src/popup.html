@@ -14,6 +14,9 @@
           <h1>Pinstack</h1>
           <p class="subhead">Save your pinned tabs as named stacks and restore them the moment a new window opens.</p>
         </div>
+        <button id="unmanageWindow" class="icon-button ghost" type="button" title="Unmanage current window" aria-label="Unmanage current window">
+          <img class="icon" src="icons/unlink.svg" alt="" aria-hidden="true" />
+        </button>
       </header>
 
       <section class="panel">
@@ -34,6 +37,13 @@
         <div class="panel-title">
           <h2>Preferences</h2>
         </div>
+        <label class="pref-row" for="newWindowBehavior">
+          <span class="pref-label">New window behavior</span>
+          <select id="newWindowBehavior">
+            <option value="default">Apply default group</option>
+            <option value="unmanaged">Leave unmanaged</option>
+          </select>
+        </label>
         <div class="toggle-row">
           <div>
             <p class="toggle-title">Close to suspend</p>

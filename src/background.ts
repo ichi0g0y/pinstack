@@ -32,7 +32,7 @@ type TabInfo = {
   windowId?: number;
   index?: number;
 };
-type TabChangeInfo = { pinned?: boolean };
+type TabChangeInfo = { pinned?: boolean; url?: string; favIconUrl?: string; title?: string };
 type TabsQuery = { windowId?: number; currentWindow?: boolean; pinned?: boolean; active?: boolean };
 type TabCreate = { windowId?: number; url?: string; pinned?: boolean; index?: number; active?: boolean };
 type TabUpdate = { pinned?: boolean; url?: string; active?: boolean };
@@ -61,8 +61,10 @@ const pendingWindowRerun = new Set<number>();
 const windowRestoreLocks = new Set<number>();
 const windowStateTimers = new Map<number, number>();
 const windowSyncTimers = new Map<number, number>();
+const skipDefaultWindows = new Set<number>();
 const SUSPENDED_PAGE = chrome.runtime.getURL("suspended.html");
 let closePinnedToSuspend = false;
+let newWindowBehavior: "default" | "unmanaged" = "default";
 
 function queryTabs(queryInfo: TabsQuery): Promise<TabInfo[]> {
   return new Promise((resolve) => {
@@ -567,6 +569,10 @@ function hasWindowMapping(localState: Awaited<ReturnType<typeof getLocalState>>,
   return Boolean(localState.windowGroupMap?.[String(windowId)]);
 }
 
+function isWindowUnmanaged(localState: Awaited<ReturnType<typeof getLocalState>>, windowId: number): boolean {
+  return Boolean(localState.unmanagedWindowMap?.[String(windowId)]);
+}
+
 function hasMissingPinnedItems(current: PinnedItem[], desired: PinnedItem[]): boolean {
   if (desired.length === 0) return false;
   if (current.length === 0) return true;
@@ -606,7 +612,12 @@ async function updateGroupItems(
     target.items.length === items.length &&
     target.items.every((item, index) => {
       const candidate = items[index];
-      return item.id === candidate?.id && item.url === candidate?.url && item.title === candidate?.title;
+      return (
+        item.id === candidate?.id &&
+        item.url === candidate?.url &&
+        item.title === candidate?.title &&
+        item.faviconUrl === candidate?.faviconUrl
+      );
     });
 
   if (same) return { changed: false, previousItems: target.items };
@@ -962,6 +973,7 @@ async function syncPinnedTabsFromWindow(
   }
   if (pendingWindowSync.has(windowId)) return;
   const localState = await getLocalState();
+  if (isWindowUnmanaged(localState, windowId)) return;
   const locked = isWindowLocked(localState, windowId);
   let state = await ensureDefaultGroup();
   const mapped = hasWindowMapping(localState, windowId);
@@ -1027,8 +1039,11 @@ async function syncMappedWindowsFromLocal(): Promise<void> {
     const mappedId = localState.windowGroupMap?.[String(window.id)];
     if (!mappedId) continue;
     if (!groupById.has(mappedId)) continue;
+    const group = groupById.get(mappedId);
+    if (!group) continue;
     const items = await getPinnedItems({ windowId: window.id, pinned: true }, mappedId);
     if (items.length === 0) continue;
+    if (hasMissingPinnedItems(items, group.items)) continue;
     await updateGroupItems(mappedId, items);
   }
 }
@@ -1068,6 +1083,10 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 150));
   const state = await ensureDefaultGroup();
   const localState = await getLocalState();
+  if (isWindowUnmanaged(localState, windowId)) {
+    return;
+  }
+  const shouldSkipDefault = skipDefaultWindows.has(windowId);
   const mappedId = localState.windowGroupMap?.[String(windowId)];
   const locked = isWindowLocked(localState, windowId);
   if (mappedId) {
@@ -1092,6 +1111,10 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
   const items = await getPinnedItems({ windowId, pinned: true });
 
   if (items.length === 0) {
+    if (shouldSkipDefault) {
+      skipDefaultWindows.delete(windowId);
+      return;
+    }
     if (state.defaultGroupId) {
       await setActiveGroupId(state.defaultGroupId);
       await setWindowGroupId(windowId, state.defaultGroupId);
@@ -1132,6 +1155,7 @@ async function loadPreferences(): Promise<void> {
     return;
   }
   closePinnedToSuspend = Boolean(prefs.closePinnedToSuspend);
+  newWindowBehavior = prefs.newWindowBehavior;
 }
 
 function scheduleWindowStateDebounced(windowId: number | undefined, delayMs = 250): void {
@@ -1183,12 +1207,28 @@ async function handleLastFocusedWindow(): Promise<void> {
 chrome.windows.onCreated.addListener((window: WindowInfo) => {
   if (window.type && window.type !== "normal") return;
   if (typeof window.id !== "number") return;
+  if (newWindowBehavior === "unmanaged") {
+    skipDefaultWindows.add(window.id);
+    void (async () => {
+      const localState = await getLocalState();
+      const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
+      unmanagedWindowMap[String(window.id)] = true;
+      await updateLocalState({ unmanagedWindowMap });
+    })();
+  }
   scheduleWindowStateDebounced(window.id, 250);
 });
 
 chrome.windows.onRemoved.addListener((windowId: number) => {
   void clearWindowGroupId(windowId);
   void clearWindowGroupLock(windowId);
+  void (async () => {
+    const localState = await getLocalState();
+    if (!localState.unmanagedWindowMap?.[String(windowId)]) return;
+    const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
+    delete unmanagedWindowMap[String(windowId)];
+    await updateLocalState({ unmanagedWindowMap });
+  })();
 });
 
 chrome.tabs.onCreated.addListener((tab: TabInfo) => {
@@ -1215,6 +1255,33 @@ chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: TabChangeInfo, tab
         await syncPinnedTabsFromWindow(tab.windowId, { allowEmpty: true });
       }
     })();
+    if (changeInfo.url || changeInfo.favIconUrl || changeInfo.title) {
+      const windowId = tab.windowId;
+      if (typeof windowId !== "number") return;
+      void (async () => {
+        const localState = await getLocalState();
+        if (isWindowUnmanaged(localState, windowId)) return;
+        await ensureSnapshotCache();
+        const snapshot = pinnedSnapshotCache.get(tabId);
+        const normalizedUrl = normalizeUrl(tab);
+        if (!normalizedUrl) return;
+        const nextFavicon = normalizeFaviconUrl(tab.favIconUrl, normalizedUrl);
+        const nextTitle = tab.title ?? snapshot?.title;
+        const shouldUpdate =
+          !snapshot ||
+          snapshot.url !== normalizedUrl ||
+          snapshot.title !== nextTitle ||
+          (nextFavicon && snapshot?.faviconUrl !== nextFavicon);
+        if (!shouldUpdate) return;
+        await setSnapshotForTab(tabId, {
+          id: snapshot?.id,
+          url: normalizedUrl,
+          title: nextTitle,
+          faviconUrl: nextFavicon ?? snapshot?.faviconUrl,
+        });
+        schedulePinnedSyncDebounced(windowId, 250);
+      })();
+    }
   }
   if (!pinnedChanged) return;
   if (changeInfo.pinned) {
@@ -1269,6 +1336,12 @@ chrome.tabs.onRemoved.addListener((tabId: number, removeInfo: TabRemoveInfo) => 
       return;
     }
     if (!wasPinned) return;
+    const localState = await getLocalState();
+    if (isWindowUnmanaged(localState, removeInfo.windowId)) {
+      pinnedTabCache.delete(tabId);
+      await removeSnapshotForTab(tabId);
+      return;
+    }
     if (intentionalRemovals.has(tabId)) {
       intentionalRemovals.delete(tabId);
       pinnedTabCache.delete(tabId);
@@ -1343,8 +1416,11 @@ type StorageChanges = Record<string, { oldValue?: unknown; newValue?: unknown }>
 
 chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string) => {
   if (areaName === "sync" && changes[PREFS_KEY]) {
-    const next = changes[PREFS_KEY]?.newValue as { closePinnedToSuspend?: boolean } | undefined;
+    const next = changes[PREFS_KEY]?.newValue as { closePinnedToSuspend?: boolean; newWindowBehavior?: string } | undefined;
     closePinnedToSuspend = Boolean(next?.closePinnedToSuspend);
+    if (next?.newWindowBehavior === "default" || next?.newWindowBehavior === "unmanaged") {
+      newWindowBehavior = next.newWindowBehavior;
+    }
     return;
   }
   if (areaName !== "sync" || !changes[SYNC_KEY]) return;
@@ -1408,6 +1484,12 @@ chrome.runtime.onMessage.addListener(
       if (state.defaultGroupId !== groupId) return;
       const group = state.groups.find((candidate) => candidate.id === groupId);
       if (!group) return;
+      const localState = await getLocalState();
+      if (localState.unmanagedWindowMap?.[String(windowId)]) {
+        const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
+        delete unmanagedWindowMap[String(windowId)];
+        await updateLocalState({ unmanagedWindowMap });
+      }
       if (message.suppressSync) {
         suppressedSyncByWindow.set(windowId, Date.now() + 1500);
       }
@@ -1432,6 +1514,12 @@ chrome.runtime.onMessage.addListener(
         if (!group) {
           sendResponse({ ok: false });
           return;
+        }
+        const localState = await getLocalState();
+        if (localState.unmanagedWindowMap?.[String(windowId)]) {
+          const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
+          delete unmanagedWindowMap[String(windowId)];
+          await updateLocalState({ unmanagedWindowMap });
         }
         suppressedSyncByWindow.set(windowId, Date.now() + 1500);
         suppressCloseToSuspend(windowId);
@@ -1467,6 +1555,35 @@ chrome.runtime.onMessage.addListener(
         suppressedSyncByWindow.set(windowId, Date.now() + 1500);
         suppressCloseToSuspend(windowId);
         await applyGroupToWindow(windowId, group.items, { mode: "exact", groupId: group.id });
+        sendResponse({ ok: true });
+      } catch {
+        sendResponse({ ok: false });
+      }
+    })();
+    return true;
+  }
+
+  if (message?.type === "pinstack:unmanage-window") {
+    if (typeof message.windowId !== "number") return;
+    const windowId = message.windowId;
+    void (async () => {
+      try {
+        const localState = await getLocalState();
+        const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
+        unmanagedWindowMap[String(windowId)] = true;
+        await updateLocalState({ unmanagedWindowMap });
+        await clearWindowGroupId(windowId);
+        await clearWindowGroupLock(windowId);
+        suppressedSyncByWindow.set(windowId, Date.now() + 2000);
+        suppressCloseToSuspend(windowId);
+        const tabs = await queryTabs({ windowId, pinned: true });
+        for (const tab of tabs) {
+          if (tab.id === undefined) continue;
+          await removeTabWithRetry(tab.id);
+          pinnedTabIds.delete(tab.id);
+          pinnedTabCache.delete(tab.id);
+        }
+        skipDefaultWindows.add(windowId);
         sendResponse({ ok: true });
       } catch {
         sendResponse({ ok: false });

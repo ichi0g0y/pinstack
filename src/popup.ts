@@ -25,6 +25,8 @@ const emptyState = document.querySelector<HTMLParagraphElement>("#emptyState");
 const statusEl = document.querySelector<HTMLParagraphElement>("#status");
 const syncNotice = document.querySelector<HTMLDivElement>("#syncNotice");
 const closeToSuspendToggle = document.querySelector<HTMLInputElement>("#closeToSuspend");
+const newWindowBehaviorSelect = document.querySelector<HTMLSelectElement>("#newWindowBehavior");
+const unmanageWindowButton = document.querySelector<HTMLButtonElement>("#unmanageWindow");
 
 if (
   !groupNameInput ||
@@ -33,7 +35,9 @@ if (
   !emptyState ||
   !statusEl ||
   !syncNotice ||
-  !closeToSuspendToggle
+  !closeToSuspendToggle ||
+  !newWindowBehaviorSelect ||
+  !unmanageWindowButton
 ) {
   throw new Error("Popup UI is missing required elements.");
 }
@@ -45,6 +49,8 @@ const emptyStateEl = emptyState;
 const statusElEl = statusEl;
 const syncNoticeEl = syncNotice;
 const closeToSuspendToggleEl = closeToSuspendToggle;
+const newWindowBehaviorSelectEl = newWindowBehaviorSelect;
+const unmanageWindowButtonEl = unmanageWindowButton;
 let draggedGroupId: string | null = null;
 
 function setStatus(message: string, tone: "info" | "error" = "info"): void {
@@ -179,6 +185,7 @@ async function refreshSyncNotice(): Promise<void> {
 async function renderPreferences(): Promise<void> {
   const prefs = await getPreferences();
   closeToSuspendToggleEl.checked = Boolean(prefs.closePinnedToSuspend);
+  newWindowBehaviorSelectEl.value = prefs.newWindowBehavior;
 }
 
 async function renderGroups(): Promise<void> {
@@ -189,6 +196,9 @@ async function renderGroups(): Promise<void> {
       chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
     }),
   ]);
+  const isUnmanaged =
+    typeof windowId === "number" ? Boolean(localState.unmanagedWindowMap?.[String(windowId)]) : false;
+  unmanageWindowButtonEl.hidden = isUnmanaged || typeof windowId !== "number";
   const activeGroupId =
     localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)
       ? localState.activeGroupId
@@ -214,7 +224,7 @@ async function renderGroups(): Promise<void> {
   groups.forEach((group) => {
     const isDefault = group.id === state.defaultGroupId;
     const isMapped = group.id === currentGroupId;
-    groupsListEl.appendChild(createGroupCard(group, { isDefault, isMapped }));
+    groupsListEl.appendChild(createGroupCard(group, { isDefault, isMapped, isUnmanaged }));
   });
 }
 
@@ -227,7 +237,7 @@ function createBadge(label: string, variant?: "accent"): HTMLSpanElement {
 
 function createGroupCard(
   group: PinnedGroup,
-  { isDefault, isMapped }: { isDefault: boolean; isMapped: boolean }
+  { isDefault, isMapped, isUnmanaged }: { isDefault: boolean; isMapped: boolean; isUnmanaged: boolean }
 ): HTMLElement {
   const card = document.createElement("article");
   card.className = "group-card";
@@ -302,13 +312,14 @@ function createGroupCard(
 
   const setActiveButton = document.createElement("button");
   setActiveButton.type = "button";
-  setActiveButton.setAttribute("aria-label", "Switch");
-  setActiveButton.title = "Switch";
+  const switchLabel = isUnmanaged ? "Attach" : "Switch";
+  setActiveButton.setAttribute("aria-label", switchLabel);
+  setActiveButton.title = switchLabel;
   setActiveButton.dataset.action = "set-active";
   setActiveButton.dataset.id = group.id;
   setActiveButton.className = "icon-button primary";
   const setActiveIcon = document.createElement("img");
-  setActiveIcon.src = "icons/arrow-left-right.svg";
+  setActiveIcon.src = isUnmanaged ? "icons/link.svg" : "icons/arrow-left-right.svg";
   setActiveIcon.alt = "";
   setActiveIcon.setAttribute("aria-hidden", "true");
   setActiveIcon.className = "icon";
@@ -589,6 +600,31 @@ async function setActiveGroup(groupId: string): Promise<void> {
   await renderGroups();
 }
 
+async function unmanageCurrentWindow(): Promise<void> {
+  const windowId = await new Promise<number | undefined>((resolve) => {
+    chrome.windows.getCurrent({}, (window: WindowInfo) => resolve(window?.id));
+  });
+  if (typeof windowId !== "number") {
+    setStatus("Failed to update window.", "error");
+    return;
+  }
+  const result = await new Promise<{ ok?: boolean }>((resolve) => {
+    chrome.runtime.sendMessage(
+      {
+        type: "pinstack:unmanage-window",
+        windowId,
+      },
+      (response: { ok?: boolean } | undefined) => resolve(response ?? {})
+    );
+  });
+  if (!result.ok) {
+    setStatus("Failed to update window.", "error");
+    return;
+  }
+  await renderGroups();
+  setStatus("Window detached from groups.");
+}
+
 async function refreshPinnedTabs(groupId: string): Promise<void> {
   setStatus("Refreshing pinned tabs…");
   const windowId = await new Promise<number | undefined>((resolve) => {
@@ -778,6 +814,15 @@ saveButtonEl.addEventListener("click", () => {
 
 closeToSuspendToggleEl.addEventListener("change", () => {
   void updatePreferences({ closePinnedToSuspend: closeToSuspendToggleEl.checked });
+});
+
+newWindowBehaviorSelectEl.addEventListener("change", () => {
+  const value = newWindowBehaviorSelectEl.value === "unmanaged" ? "unmanaged" : "default";
+  void updatePreferences({ newWindowBehavior: value });
+});
+
+unmanageWindowButtonEl.addEventListener("click", () => {
+  void unmanageCurrentWindow();
 });
 
 groupNameInputEl.addEventListener("keydown", (event) => {

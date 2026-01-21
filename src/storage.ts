@@ -20,11 +20,13 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
   closePinnedToSuspend: false,
   windowGroupMap: {},
   windowGroupLockMap: {},
+  unmanagedWindowMap: {},
 };
 
 const DEFAULT_PREFERENCES: PreferenceStateV1 = {
   version: 1,
   closePinnedToSuspend: false,
+  newWindowBehavior: "default",
 };
 
 type SnapshotStateV1 = {
@@ -113,6 +115,16 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
       windowGroupLockMap[key] = value;
     }
   }
+  const unmanagedMap =
+    candidate.unmanagedWindowMap && typeof candidate.unmanagedWindowMap === "object"
+      ? candidate.unmanagedWindowMap
+      : {};
+  const unmanagedWindowMap: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(unmanagedMap)) {
+    if (typeof value === "boolean") {
+      unmanagedWindowMap[key] = value;
+    }
+  }
   return {
     version: 1,
     lastLocalWriteAt: typeof candidate.lastLocalWriteAt === "number" ? candidate.lastLocalWriteAt : 0,
@@ -124,6 +136,7 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
         : DEFAULT_LOCAL_STATE.closePinnedToSuspend,
     windowGroupMap,
     windowGroupLockMap,
+    unmanagedWindowMap,
   };
 }
 
@@ -137,6 +150,10 @@ function normalizePreferences(raw: unknown): PreferenceStateV1 {
       typeof candidate.closePinnedToSuspend === "boolean"
         ? candidate.closePinnedToSuspend
         : DEFAULT_PREFERENCES.closePinnedToSuspend,
+    newWindowBehavior:
+      candidate.newWindowBehavior === "default" || candidate.newWindowBehavior === "unmanaged"
+        ? candidate.newWindowBehavior
+        : DEFAULT_PREFERENCES.newWindowBehavior,
   };
 }
 

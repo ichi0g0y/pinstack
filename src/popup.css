@@ -71,6 +71,7 @@ body::after {
 .hero {
   display: flex;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 12px;
   padding: 6px 4px 0;
 }
@@ -132,6 +133,16 @@ input {
   border-radius: 12px;
   padding: 10px 12px;
   font-size: 14px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+
+select {
+  border: 1px solid var(--outline);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
   font-family: inherit;
   background: #fff;
   color: var(--ink);
@@ -213,6 +224,21 @@ button.danger {
   border-radius: 12px;
   border: 1px dashed rgba(27, 26, 22, 0.12);
   background: rgba(27, 26, 22, 0.04);
+}
+
+.pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 2px 0;
+}
+
+.pref-label {
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .toggle-title {
@@ -387,6 +413,10 @@ button.danger {
   background: rgba(195, 74, 74, 0.12);
   color: #8f1f1f;
   box-shadow: none;
+}
+
+.icon-button.ghost {
+  background: rgba(27, 26, 22, 0.06);
 }
 
 .icon-button:hover {
