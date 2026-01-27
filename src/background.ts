@@ -747,11 +747,13 @@ async function applyGroupToWindow(
     removedUrls?: Set<string>;
     forceCloseExtras?: boolean;
     groupId?: string;
+    allowAdditions?: boolean;
   } = {}
 ): Promise<void> {
   beginApplyingGroup();
   try {
     const mode = options.mode ?? "exact";
+    const allowAdditions = options.allowAdditions ?? true;
     const groupId = options.groupId;
     await ensureSnapshotCache();
     const tabs = await queryTabs({ windowId });
@@ -817,6 +819,9 @@ async function applyGroupToWindow(
       const existingUnpinned = unpinnedList?.shift();
 
       if (existingUnpinned?.id !== undefined) {
+        if (!allowAdditions) {
+          continue;
+        }
         await updateTabWithRetry(existingUnpinned.id, { pinned: true });
         pinnedTabIds.add(existingUnpinned.id);
         keepTabIds.add(existingUnpinned.id);
@@ -848,6 +853,9 @@ async function applyGroupToWindow(
 
       const fallbackUnpinned = availableUnpinnedByUrl.get(urlFallback)?.shift();
       if (fallbackUnpinned?.id !== undefined) {
+        if (!allowAdditions) {
+          continue;
+        }
         await updateTabWithRetry(fallbackUnpinned.id, { pinned: true });
         pinnedTabIds.add(fallbackUnpinned.id);
         keepTabIds.add(fallbackUnpinned.id);
@@ -865,6 +873,7 @@ async function applyGroupToWindow(
       const dedupeKey = item.id;
       if (createdIds.has(dedupeKey)) continue;
       createdIds.add(dedupeKey);
+      if (!allowAdditions) continue;
       const created = await createTabWithRetry({
         windowId,
         url: buildSuspendedUrl(item),
@@ -1618,9 +1627,8 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
     const recentLocalWrite = await wasRecentLocalWrite();
     if (recentLocalWrite) return;
 
-    await updateLocalState({ hasRemoteUpdate: true });
-    await chrome.action.setBadgeBackgroundColor({ color: "#d1492e" });
-    await chrome.action.setBadgeText({ text: "!" });
+    await updateLocalState({ hasRemoteUpdate: false });
+    await chrome.action.setBadgeText({ text: "" });
 
     const state = await ensureDefaultGroup();
     const localState = await getLocalState();
@@ -1647,7 +1655,14 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
       if (!mappedId) continue;
       const group = state.groups.find((candidate) => candidate.id === mappedId);
       if (!group) continue;
-      await applyGroupToWindow(window.id, group.items, { mode: "exact", groupId: group.id });
+      const pinnedTabs = await queryTabs({ windowId: window.id, pinned: true });
+      const allowAdditions = pinnedTabs.length === 0;
+      await applyGroupToWindow(window.id, group.items, {
+        mode: "exact",
+        groupId: group.id,
+        forceCloseExtras: true,
+        allowAdditions,
+      });
     }
   })();
 });
@@ -1821,6 +1836,7 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   void (async () => {
+    await chrome.action.setBadgeText({ text: "" });
     await loadPreferences();
     await initializeSyncState();
     await handleLastFocusedWindow();
@@ -1830,6 +1846,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 void (async () => {
+  await chrome.action.setBadgeText({ text: "" });
   await loadPreferences();
   await initializeSyncState();
   await handleLastFocusedWindow();
