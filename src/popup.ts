@@ -6,6 +6,7 @@ import {
   getPinnedSnapshots,
   markLocalWrite,
   setActiveGroupId,
+  setDeviceDefaultGroupId,
   setPinnedSnapshots,
   setWindowGroupId,
   setSyncState,
@@ -154,10 +155,10 @@ function getNextGroupOrder(state: SyncStateV1): number {
   return (orders.length ? Math.max(...orders) : -1) + 1;
 }
 
-function sortGroups(state: SyncStateV1): PinnedGroup[] {
+function sortGroups(state: SyncStateV1, defaultGroupId?: string): PinnedGroup[] {
   return [...state.groups].sort((a, b) => {
-    const aDefault = a.id === state.defaultGroupId;
-    const bDefault = b.id === state.defaultGroupId;
+    const aDefault = Boolean(defaultGroupId && a.id === defaultGroupId);
+    const bDefault = Boolean(defaultGroupId && b.id === defaultGroupId);
     if (aDefault && !bDefault) return -1;
     if (!aDefault && bDefault) return 1;
     const orderA = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
@@ -199,10 +200,19 @@ async function renderGroups(): Promise<void> {
   const isUnmanaged =
     typeof windowId === "number" ? Boolean(localState.unmanagedWindowMap?.[String(windowId)]) : false;
   unmanageWindowButtonEl.hidden = isUnmanaged || typeof windowId !== "number";
+  const deviceDefaultGroupId =
+    localState.deviceDefaultGroupId && state.groups.some((group) => group.id === localState.deviceDefaultGroupId)
+      ? localState.deviceDefaultGroupId
+      : undefined;
+
+  if (localState.deviceDefaultGroupId && localState.deviceDefaultGroupId !== deviceDefaultGroupId) {
+    await setDeviceDefaultGroupId(undefined);
+  }
+
   const activeGroupId =
     localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)
       ? localState.activeGroupId
-      : state.defaultGroupId;
+      : deviceDefaultGroupId;
 
   if (localState.activeGroupId && localState.activeGroupId !== activeGroupId) {
     await setActiveGroupId(undefined);
@@ -212,7 +222,7 @@ async function renderGroups(): Promise<void> {
     typeof windowId === "number" ? localState.windowGroupMap?.[String(windowId)] : undefined;
   const currentGroupId =
     mappedGroupId && state.groups.some((group) => group.id === mappedGroupId) ? mappedGroupId : undefined;
-  const groups = sortGroups(state);
+  const groups = sortGroups(state, deviceDefaultGroupId);
 
   groupsListEl.innerHTML = "";
   if (groups.length === 0) {
@@ -222,7 +232,7 @@ async function renderGroups(): Promise<void> {
 
   emptyStateEl.hidden = true;
   groups.forEach((group) => {
-    const isDefault = group.id === state.defaultGroupId;
+    const isDefault = group.id === deviceDefaultGroupId;
     const isMapped = group.id === currentGroupId;
     groupsListEl.appendChild(createGroupCard(group, { isDefault, isMapped, isUnmanaged }));
   });
@@ -479,12 +489,16 @@ async function saveGroupFromPinnedTabs(): Promise<void> {
   const nextState: SyncStateV1 = {
     version: 1,
     groups: [...state.groups, newGroup],
-    defaultGroupId: state.defaultGroupId ?? newGroup.id,
+    defaultGroupId: undefined,
   };
 
   await markLocalWrite();
   await setSyncState(nextState);
   await clearRemoteNotice();
+  const localState = await getLocalState();
+  if (!localState.deviceDefaultGroupId) {
+    await setDeviceDefaultGroupId(newGroup.id);
+  }
 
   await setActiveGroupId(newGroup.id);
   const windowId = await new Promise<number | undefined>((resolve) => {
@@ -502,16 +516,10 @@ async function saveGroupFromPinnedTabs(): Promise<void> {
 
 async function setDefaultGroup(groupId: string): Promise<void> {
   const state = await ensureDefaultGroup();
-  if (state.defaultGroupId === groupId) return;
-
-  const nextState: SyncStateV1 = {
-    ...state,
-    defaultGroupId: groupId,
-  };
-
-  await markLocalWrite();
-  await setSyncState(nextState);
-  await clearRemoteNotice();
+  if (!state.groups.some((group) => group.id === groupId)) return;
+  const localState = await getLocalState();
+  if (localState.deviceDefaultGroupId === groupId) return;
+  await setDeviceDefaultGroupId(groupId);
   setStatus("Default group updated.");
   await renderGroups();
 }
@@ -520,21 +528,23 @@ async function deleteGroup(groupId: string): Promise<void> {
   const [state, localState] = await Promise.all([ensureDefaultGroup(), getLocalState()]);
   const nextGroups = state.groups.filter((group) => group.id !== groupId);
 
-  let nextDefaultId = state.defaultGroupId === groupId ? undefined : state.defaultGroupId;
-  if (!nextDefaultId && nextGroups.length > 0) {
-    const sorted = sortGroups({ ...state, groups: nextGroups, defaultGroupId: undefined });
-    nextDefaultId = sorted[0]?.id;
-  }
-
   const nextState: SyncStateV1 = {
     ...state,
     groups: nextGroups,
-    defaultGroupId: nextDefaultId,
+    defaultGroupId: undefined,
   };
 
   await markLocalWrite();
   await setSyncState(nextState);
   await clearRemoteNotice();
+  if (localState.deviceDefaultGroupId === groupId) {
+    let nextDefaultId: string | undefined;
+    if (nextGroups.length > 0) {
+      const sorted = sortGroups({ ...state, groups: nextGroups }, undefined);
+      nextDefaultId = sorted[0]?.id;
+    }
+    await setDeviceDefaultGroupId(nextDefaultId);
+  }
   if (localState.activeGroupId === groupId) {
     await setActiveGroupId(undefined);
   }
@@ -653,7 +663,11 @@ async function refreshPinnedTabs(groupId: string): Promise<void> {
 }
 
 async function persistGroupOrder(): Promise<void> {
-  const state = await ensureDefaultGroup();
+  const [state, localState] = await Promise.all([ensureDefaultGroup(), getLocalState()]);
+  const deviceDefaultGroupId =
+    localState.deviceDefaultGroupId && state.groups.some((group) => group.id === localState.deviceDefaultGroupId)
+      ? localState.deviceDefaultGroupId
+      : undefined;
   const cards = Array.from(groupsListEl.querySelectorAll<HTMLElement>(".group-card"));
   const orderedIds = cards
     .map((card) => ({
@@ -668,7 +682,7 @@ async function persistGroupOrder(): Promise<void> {
   const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
   let changed = false;
   const nextGroups = state.groups.map((group) => {
-    if (group.id === state.defaultGroupId) return group;
+    if (deviceDefaultGroupId && group.id === deviceDefaultGroupId) return group;
     const order = orderMap.get(group.id);
     if (order === undefined || group.order === order) return group;
     changed = true;

@@ -22,6 +22,7 @@ export type LocalStateV1 = {
   lastLocalWriteAt: number;
   hasRemoteUpdate: boolean;
   activeGroupId?: string;
+  deviceDefaultGroupId?: string;
   closePinnedToSuspend?: boolean;
   windowGroupMap?: Record<string, string>;
   windowGroupLockMap?: Record<string, boolean>;

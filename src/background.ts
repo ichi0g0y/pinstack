@@ -626,6 +626,7 @@ async function seedPinnedTabIds(): Promise<void> {
 
 async function resolveSyncGroupId(state: SyncStateV1, windowId?: number): Promise<string | undefined> {
   const localState = await getLocalState();
+  const deviceDefaultId = getDeviceDefaultGroupId(localState, state);
   if (typeof windowId === "number") {
     const mappedId = localState.windowGroupMap?.[String(windowId)];
     if (mappedId && state.groups.some((group) => group.id === mappedId)) {
@@ -634,12 +635,12 @@ async function resolveSyncGroupId(state: SyncStateV1, windowId?: number): Promis
     if (mappedId) {
       await clearWindowGroupId(windowId);
     }
-    return state.defaultGroupId;
+    return deviceDefaultId;
   }
   if (localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)) {
     return localState.activeGroupId;
   }
-  return state.defaultGroupId;
+  return deviceDefaultId;
 }
 
 function getGroupIdForWindow(
@@ -647,14 +648,15 @@ function getGroupIdForWindow(
   windowId: number,
   localState: Awaited<ReturnType<typeof getLocalState>>
 ): string | undefined {
+  const deviceDefaultId = getDeviceDefaultGroupId(localState, state);
   const mappedId = localState.windowGroupMap?.[String(windowId)];
   if (mappedId && state.groups.some((group) => group.id === mappedId)) {
     return mappedId;
   }
   if (mappedId) {
-    return state.defaultGroupId;
+    return deviceDefaultId;
   }
-  return state.defaultGroupId;
+  return deviceDefaultId;
 }
 
 function isWindowLocked(localState: Awaited<ReturnType<typeof getLocalState>>, windowId: number): boolean {
@@ -667,6 +669,16 @@ function hasWindowMapping(localState: Awaited<ReturnType<typeof getLocalState>>,
 
 function isWindowUnmanaged(localState: Awaited<ReturnType<typeof getLocalState>>, windowId: number): boolean {
   return Boolean(localState.unmanagedWindowMap?.[String(windowId)]);
+}
+
+function getDeviceDefaultGroupId(
+  localState: Awaited<ReturnType<typeof getLocalState>>,
+  state: SyncStateV1
+): string | undefined {
+  const deviceDefault = localState.deviceDefaultGroupId;
+  if (typeof deviceDefault !== "string") return undefined;
+  if (!state.groups.some((group) => group.id === deviceDefault)) return undefined;
+  return deviceDefault;
 }
 
 function hasMissingPinnedItems(current: PinnedItem[], desired: PinnedItem[]): boolean {
@@ -1097,6 +1109,7 @@ async function syncPinnedTabsFromWindow(
   if (isWindowUnmanaged(localState, windowId)) return;
   const locked = isWindowLocked(localState, windowId);
   let state = await ensureDefaultGroup();
+  const deviceDefaultId = getDeviceDefaultGroupId(localState, state);
   const mapped = hasWindowMapping(localState, windowId);
   if (!mapped && !locked) {
     if (await hasPinnedTabs(windowId)) {
@@ -1106,7 +1119,7 @@ async function syncPinnedTabsFromWindow(
     state = await ensureDefaultGroup();
   }
   const groupId = locked
-    ? localState.windowGroupMap?.[String(windowId)] ?? state.defaultGroupId
+    ? localState.windowGroupMap?.[String(windowId)] ?? deviceDefaultId
     : await resolveSyncGroupId(state, windowId);
   if (!groupId) return;
 
@@ -1146,7 +1159,8 @@ async function initializeSyncState(): Promise<void> {
 
 async function maybeRestoreDefaultGroup(
   windowId: number | undefined,
-  state?: SyncStateV1
+  state?: SyncStateV1,
+  defaultGroupId?: string
 ): Promise<void> {
   if (!windowId) return;
   const [tabs, pinnedTabs] = await Promise.all([
@@ -1157,11 +1171,12 @@ async function maybeRestoreDefaultGroup(
   if (pinnedTabs.length > 0) return;
 
   const nextState = state ?? (await ensureDefaultGroup());
-  const group = nextState.groups.find((candidate) => candidate.id === nextState.defaultGroupId);
+  const targetId = defaultGroupId;
+  const group = targetId ? nextState.groups.find((candidate) => candidate.id === targetId) : undefined;
   if (!group || group.items.length === 0) return;
 
-  if (nextState.defaultGroupId) {
-    await setWindowGroupId(windowId, nextState.defaultGroupId);
+  if (targetId) {
+    await setWindowGroupId(windowId, targetId);
   }
   await applyGroupToWindow(windowId, group.items, { mode: "exact", groupId: group.id });
 }
@@ -1219,6 +1234,7 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 150));
   const state = await ensureDefaultGroup();
   const localState = await getLocalState();
+  const deviceDefaultId = getDeviceDefaultGroupId(localState, state);
   if (isWindowUnmanaged(localState, windowId)) {
     return;
   }
@@ -1272,11 +1288,17 @@ async function handleWindowState(windowId: number | undefined): Promise<void> {
       clearRecognitionAttempts(windowId);
       return;
     }
-    if (state.defaultGroupId) {
-      await setActiveGroupId(state.defaultGroupId);
-      await setWindowGroupId(windowId, state.defaultGroupId);
+    if (deviceDefaultId) {
+      await setActiveGroupId(deviceDefaultId);
+      await setWindowGroupId(windowId, deviceDefaultId);
+      await maybeRestoreDefaultGroup(windowId, state, deviceDefaultId);
+    } else {
+      if (!isWindowUnmanaged(localState, windowId)) {
+        const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
+        unmanagedWindowMap[String(windowId)] = true;
+        await updateLocalState({ unmanagedWindowMap });
+      }
     }
-    await maybeRestoreDefaultGroup(windowId, state);
     clearRecognitionAttempts(windowId);
     return;
   }
@@ -1382,7 +1404,9 @@ function schedulePinnedSyncDebounced(windowId: number | undefined, delayMs = 200
 }
 
 async function maybeRestoreDefaultGroupInAllWindows(): Promise<void> {
-  const tabs = await queryTabs({});
+  const [tabs, localState, state] = await Promise.all([queryTabs({}), getLocalState(), ensureDefaultGroup()]);
+  const deviceDefaultId = getDeviceDefaultGroupId(localState, state);
+  if (!deviceDefaultId) return;
   const windowIds = new Set<number>();
   for (const tab of tabs) {
     if (typeof tab.windowId === "number") {
@@ -1391,7 +1415,7 @@ async function maybeRestoreDefaultGroupInAllWindows(): Promise<void> {
   }
 
   for (const windowId of windowIds) {
-    await maybeRestoreDefaultGroup(windowId);
+    await maybeRestoreDefaultGroup(windowId, state, deviceDefaultId);
   }
 }
 
@@ -1636,6 +1660,8 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
     const windowGroupMap = { ...(localState.windowGroupMap ?? {}) };
     const windowGroupLockMap = { ...(localState.windowGroupLockMap ?? {}) };
     let mapChanged = false;
+    let deviceDefaultChanged = false;
+    const deviceDefaultId = localState.deviceDefaultGroupId;
 
     for (const [key, value] of Object.entries(windowGroupMap)) {
       if (validIds.has(value)) continue;
@@ -1644,8 +1670,16 @@ chrome.storage.onChanged.addListener((changes: StorageChanges, areaName: string)
       delete windowGroupLockMap[key];
     }
 
-    if (mapChanged) {
-      await updateLocalState({ windowGroupMap, windowGroupLockMap });
+    if (deviceDefaultId && !validIds.has(deviceDefaultId)) {
+      deviceDefaultChanged = true;
+    }
+
+    if (mapChanged || deviceDefaultChanged) {
+      await updateLocalState({
+        windowGroupMap,
+        windowGroupLockMap,
+        deviceDefaultGroupId: deviceDefaultChanged ? undefined : deviceDefaultId,
+      });
     }
 
     const windows = await getAllWindows();
@@ -1684,28 +1718,33 @@ chrome.runtime.onMessage.addListener(
       const windowId = message.windowId;
       const groupId = message.groupId;
       void (async () => {
-      const state = await ensureDefaultGroup();
-      if (state.defaultGroupId !== groupId) return;
-      const group = state.groups.find((candidate) => candidate.id === groupId);
-      if (!group) return;
-      const localState = await getLocalState();
-      if (localState.unmanagedWindowMap?.[String(windowId)]) {
-        const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
-        delete unmanagedWindowMap[String(windowId)];
-        await updateLocalState({ unmanagedWindowMap });
-      }
-      if (message.suppressSync) {
-        suppressedSyncByWindow.set(windowId, Date.now() + 1500);
-      }
-      if (message.suppressCloseToSuspend) {
-        suppressCloseToSuspend(windowId);
-      }
-      await setActiveGroupId(group.id);
-      await setWindowGroupId(windowId, group.id);
-      await applyGroupToWindow(windowId, group.items, { mode: "exact", forceCloseExtras: true, groupId: group.id });
-    })();
-    return;
-  }
+        const state = await ensureDefaultGroup();
+        const localState = await getLocalState();
+        const deviceDefaultId = getDeviceDefaultGroupId(localState, state);
+        if (deviceDefaultId !== groupId) return;
+        const group = state.groups.find((candidate) => candidate.id === groupId);
+        if (!group) return;
+        if (localState.unmanagedWindowMap?.[String(windowId)]) {
+          const unmanagedWindowMap = { ...(localState.unmanagedWindowMap ?? {}) };
+          delete unmanagedWindowMap[String(windowId)];
+          await updateLocalState({ unmanagedWindowMap });
+        }
+        if (message.suppressSync) {
+          suppressedSyncByWindow.set(windowId, Date.now() + 1500);
+        }
+        if (message.suppressCloseToSuspend) {
+          suppressCloseToSuspend(windowId);
+        }
+        await setActiveGroupId(group.id);
+        await setWindowGroupId(windowId, group.id);
+        await applyGroupToWindow(windowId, group.items, {
+          mode: "exact",
+          forceCloseExtras: true,
+          groupId: group.id,
+        });
+      })();
+      return;
+    }
 
   if (message?.type === "pinstack:apply-group") {
     if (typeof message.windowId !== "number" || typeof message.groupId !== "string") return;

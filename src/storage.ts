@@ -17,6 +17,7 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
   lastLocalWriteAt: 0,
   hasRemoteUpdate: false,
   activeGroupId: undefined,
+  deviceDefaultGroupId: undefined,
   closePinnedToSuspend: false,
   windowGroupMap: {},
   windowGroupLockMap: {},
@@ -90,7 +91,7 @@ function normalizeSyncState(raw: unknown): SyncStateV1 {
   return {
     version: 1,
     groups,
-    defaultGroupId: typeof candidate.defaultGroupId === "string" ? candidate.defaultGroupId : undefined,
+    defaultGroupId: undefined,
   };
 }
 
@@ -130,6 +131,8 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
     lastLocalWriteAt: typeof candidate.lastLocalWriteAt === "number" ? candidate.lastLocalWriteAt : 0,
     hasRemoteUpdate: Boolean(candidate.hasRemoteUpdate),
     activeGroupId: typeof candidate.activeGroupId === "string" ? candidate.activeGroupId : undefined,
+    deviceDefaultGroupId:
+      typeof candidate.deviceDefaultGroupId === "string" ? candidate.deviceDefaultGroupId : undefined,
     closePinnedToSuspend:
       typeof candidate.closePinnedToSuspend === "boolean"
         ? candidate.closePinnedToSuspend
@@ -282,26 +285,15 @@ export async function setActiveGroupId(groupId?: string): Promise<LocalStateV1> 
   return updateLocalState({ activeGroupId: groupId });
 }
 
+export async function setDeviceDefaultGroupId(groupId?: string): Promise<LocalStateV1> {
+  return updateLocalState({ deviceDefaultGroupId: groupId });
+}
+
 export async function ensureDefaultGroup(): Promise<SyncStateV1> {
   const state = await getSyncState();
-  const hasDefault =
-    typeof state.defaultGroupId === "string" &&
-    state.groups.some((group) => group.id === state.defaultGroupId);
-
   let nextState = state;
   let needsWrite = false;
   const orderAssignments = new Map<string, number>();
-
-  if (!hasDefault) {
-    const fallbackId = pickFallbackDefault(state.groups);
-    if (fallbackId) {
-      nextState = {
-        ...state,
-        defaultGroupId: fallbackId,
-      };
-      needsWrite = true;
-    }
-  }
 
   const groups = nextState.groups;
   const orderedGroups = groups.filter((group) => typeof group.order === "number");
