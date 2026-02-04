@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAowP6mp1rIFtSBjGXGi5162tjPqfcqTmoovJMz89zV7rTj1ecVZl+nfq9MSg4YJASuON0UTuGorLGUiISLDju5FpircKiMvgDWWg4j8zGVsimp7D4yylIFnObXron+NMTBSL/hUZUP7s+hfHE2L4gbycJUKwkIUB9rO78Mu+XLeiU7g21QqORsXcG+tODJZjW1dXepuf5Ho1qXSkaaPu/Bv2u6+F8Vd73JvP7yZL+u5RUNbNvfbeZJ7aI6OnCcqB1SBGztu2+HGqPwAH0YWvVb4DJLD8C22XYQAEbeuFJoe11tzh2e5sTuv6BaGMmK71LzjsINvGVKO7nYJcvXLUcxQIDAQAB",
   "name": "Pinstack",
   "description": "Save and restore pinned tab groups across your devices.",
   "version": "0.1.0",
-  "permissions": ["tabs", "storage"],
+  "permissions": ["tabs", "storage", "sessions"],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:;"
   },

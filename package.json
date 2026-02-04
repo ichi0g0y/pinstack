@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "lucide-static": "^0.562.0"
   }
 }

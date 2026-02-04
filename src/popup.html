@@ -14,6 +14,9 @@
           <h1>Pinstack</h1>
           <p class="subhead">Save your pinned tabs as named stacks and restore them the moment a new window opens.</p>
         </div>
+        <button id="unmanageWindow" class="icon-button ghost" type="button" title="Unmanage current window" aria-label="Unmanage current window">
+          <img class="icon" src="icons/unlink.svg" alt="" aria-hidden="true" />
+        </button>
       </header>
 
       <section class="panel">
@@ -24,6 +27,29 @@
         <button id="saveGroup" class="primary" type="button">Save pinned tabs</button>
         <p id="status" class="status" hidden></p>
         <p class="helper">Only pinned tabs from the current window are saved.</p>
+      </section>
+
+      <section id="syncNotice" class="notice" hidden>
+        New synced changes detected from another device. Review the latest groups before restoring.
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>Preferences</h2>
+        </div>
+        <div class="toggle-row">
+          <div>
+            <p class="toggle-title">
+              Auto-restore default group on new windows
+              <span class="badge badge-accent">Experimental</span>
+            </p>
+            <p class="toggle-note">When enabled, new windows start with the default group.</p>
+          </div>
+          <label class="switch">
+            <input id="restoreDefaultOnNewWindow" type="checkbox" />
+            <span class="slider" aria-hidden="true"></span>
+          </label>
+        </div>
         <div class="toggle-row">
           <div>
             <p class="toggle-title">Close to suspend</p>
@@ -34,10 +60,6 @@
             <span class="slider" aria-hidden="true"></span>
           </label>
         </div>
-      </section>
-
-      <section id="syncNotice" class="notice" hidden>
-        New synced changes detected from another device. Review the latest groups before restoring.
       </section>
 
       <section class="panel">

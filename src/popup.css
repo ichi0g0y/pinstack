@@ -15,12 +15,22 @@
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
   min-width: 320px;
-  background: radial-gradient(circle at top left, #fff4e0 0%, var(--bg) 40%, var(--bg-2) 100%);
   color: var(--ink);
   font-family: "Georgia", "Palatino", "Times New Roman", serif;
+}
+
+html {
+  min-height: 100%;
+  background: var(--bg);
+}
+
+body {
+  min-height: 100%;
+  background: radial-gradient(circle at top left, #fff4e0 0%, var(--bg) 40%, var(--bg-2) 100%);
 }
 
 body::before,
@@ -61,6 +71,7 @@ body::after {
 .hero {
   display: flex;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 12px;
   padding: 6px 4px 0;
 }
@@ -127,6 +138,16 @@ input {
   color: var(--ink);
 }
 
+select {
+  border: 1px solid var(--outline);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+
 input:focus {
   outline: 2px solid rgba(213, 107, 47, 0.35);
   border-color: var(--accent);
@@ -163,6 +184,16 @@ button.primary:hover {
   background: var(--accent-dark);
 }
 
+button.secondary {
+  background: rgba(27, 26, 22, 0.08);
+  color: var(--ink);
+  box-shadow: 0 6px 14px rgba(27, 26, 22, 0.08);
+}
+
+button.secondary:hover {
+  background: rgba(27, 26, 22, 0.14);
+}
+
 button.danger {
   background: rgba(179, 63, 44, 0.12);
   color: var(--danger);
@@ -193,6 +224,21 @@ button.danger {
   border-radius: 12px;
   border: 1px dashed rgba(27, 26, 22, 0.12);
   background: rgba(27, 26, 22, 0.04);
+}
+
+.pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 6px 2px 0;
+}
+
+.pref-label {
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .toggle-title {
@@ -281,6 +327,17 @@ button.danger {
   animation: cardReveal 0.35s ease both;
 }
 
+.group-card[data-mapped="true"] {
+  border-width: 2px;
+  border-color: rgba(213, 107, 47, 0.6);
+  box-shadow: 0 10px 20px rgba(213, 107, 47, 0.14);
+  background: linear-gradient(145deg, rgba(213, 107, 47, 0.08), rgba(255, 250, 241, 0.9));
+}
+
+.group-card[data-mapped="true"] .group-meta {
+  color: var(--ink);
+}
+
 .group-card[draggable="true"] {
   cursor: grab;
 }
@@ -297,15 +354,82 @@ button.danger {
   gap: 8px;
 }
 
+.group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.group-title-text {
+  margin: 0;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.group-title-input {
+  font-size: 15px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(27, 26, 22, 0.2);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  min-width: 160px;
+}
+
+.icon-button {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.icon-button .icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.icon-button.primary {
+  background: rgba(213, 107, 47, 0.12);
+  color: var(--accent-dark);
+  box-shadow: none;
+}
+
+.icon-button.secondary {
+  border-color: rgba(27, 26, 22, 0.16);
+  box-shadow: none;
+}
+
+.icon-button.danger {
+  background: rgba(195, 74, 74, 0.12);
+  color: #8f1f1f;
+  box-shadow: none;
+}
+
+.icon-button.ghost {
+  background: rgba(27, 26, 22, 0.06);
+}
+
+.icon-button:hover {
+  border-color: rgba(27, 26, 22, 0.12);
+  color: var(--ink);
+  background: rgba(27, 26, 22, 0.04);
+  transform: none;
+}
+
 .badges {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-}
-
-.group-header h3 {
-  margin: 0;
-  font-size: 15px;
 }
 
 .badge {

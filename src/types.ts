@@ -1,4 +1,6 @@
-export type PinnedItem = { url: string; title?: string; faviconUrl?: string };
+export type PinnedItem = { id: string; url: string; title?: string; faviconUrl?: string };
+
+export type PinnedSnapshot = { id?: string; url: string; title?: string; faviconUrl?: string };
 
 export type PinnedGroup = {
   id: string;
@@ -12,7 +14,6 @@ export type PinnedGroup = {
 export type SyncStateV1 = {
   version: 1;
   groups: PinnedGroup[];
-  defaultGroupId?: string;
 };
 
 export type LocalStateV1 = {
@@ -20,8 +21,12 @@ export type LocalStateV1 = {
   lastLocalWriteAt: number;
   hasRemoteUpdate: boolean;
   activeGroupId?: string;
+  deviceDefaultGroupId?: string;
+  autoApplyDefaultOnNewWindow?: boolean;
   closePinnedToSuspend?: boolean;
   windowGroupMap?: Record<string, string>;
+  windowGroupLockMap?: Record<string, boolean>;
+  unmanagedWindowMap?: Record<string, boolean>;
 };
 
 export type PreferenceStateV1 = {
