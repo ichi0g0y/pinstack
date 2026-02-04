@@ -9,7 +9,6 @@ export const SNAPSHOT_KEY = "pinstack_pinned_snapshots_v1";
 const DEFAULT_SYNC_STATE: SyncStateV1 = {
   version: 1,
   groups: [],
-  defaultGroupId: undefined,
 };
 
 const DEFAULT_LOCAL_STATE: LocalStateV1 = {
@@ -18,6 +17,7 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
   hasRemoteUpdate: false,
   activeGroupId: undefined,
   deviceDefaultGroupId: undefined,
+  autoApplyDefaultOnNewWindow: false,
   closePinnedToSuspend: false,
   windowGroupMap: {},
   windowGroupLockMap: {},
@@ -27,7 +27,6 @@ const DEFAULT_LOCAL_STATE: LocalStateV1 = {
 const DEFAULT_PREFERENCES: PreferenceStateV1 = {
   version: 1,
   closePinnedToSuspend: false,
-  newWindowBehavior: "default",
 };
 
 type SnapshotStateV1 = {
@@ -40,58 +39,79 @@ const DEFAULT_SNAPSHOT_STATE: SnapshotStateV1 = {
   snapshots: {},
 };
 
-function isPinnedGroup(value: unknown): value is PinnedGroup {
-  if (!value || typeof value !== "object") return false;
-  const group = value as PinnedGroup;
-  if ("order" in group && typeof group.order !== "number") return false;
-  return (
-    typeof group.id === "string" &&
-    typeof group.name === "string" &&
-    Array.isArray(group.items) &&
-    typeof group.createdAt === "number" &&
-    typeof group.updatedAt === "number"
-  );
+let syncStateNeedsWrite = false;
+
+type RawPinnedGroup = {
+  id?: unknown;
+  name?: unknown;
+  items?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  order?: unknown;
+};
+
+function normalizePinnedGroup(value: unknown, now: number): PinnedGroup | null {
+  if (!value || typeof value !== "object") return null;
+  const group = value as RawPinnedGroup;
+  if (typeof group.id !== "string" || !group.id.trim()) return null;
+  if (typeof group.name !== "string") return null;
+  if (!Array.isArray(group.items)) return null;
+
+  const groupId = group.id.trim();
+  const createdAtMissing = typeof group.createdAt !== "number";
+  const updatedAtMissing = typeof group.updatedAt !== "number";
+  if (createdAtMissing || updatedAtMissing) {
+    syncStateNeedsWrite = true;
+  }
+  const createdAt = createdAtMissing ? now : (group.createdAt as number);
+  const updatedAtRaw = updatedAtMissing ? createdAt : (group.updatedAt as number);
+  const updatedAt = Math.max(updatedAtRaw, createdAt);
+  const order = typeof group.order === "number" ? group.order : undefined;
+
+  const items = group.items
+    .filter((item) => item && typeof (item as { url?: unknown }).url === "string")
+    .map((item) => {
+      const candidate = item as { id?: string; url: string; title?: string; faviconUrl?: string };
+      const url = candidate.url.trim();
+      const id =
+        typeof candidate.id === "string" && candidate.id.trim()
+          ? candidate.id
+          : hashPinnedItemId(groupId, url);
+      return {
+        id,
+        url,
+        title: typeof candidate.title === "string" ? candidate.title : undefined,
+        faviconUrl: typeof candidate.faviconUrl === "string" ? candidate.faviconUrl : undefined,
+      };
+    })
+    .filter((item) => item.url);
+
+  return {
+    id: groupId,
+    name: group.name,
+    items,
+    createdAt,
+    updatedAt,
+    order,
+  };
 }
 
 function normalizeSyncState(raw: unknown): SyncStateV1 {
+  syncStateNeedsWrite = false;
   if (!raw || typeof raw !== "object") return { ...DEFAULT_SYNC_STATE };
   const candidate = raw as SyncStateV1;
   if (candidate.version !== 1 || !Array.isArray(candidate.groups)) {
     return { ...DEFAULT_SYNC_STATE };
   }
 
+  const now = Date.now();
   const groups = candidate.groups
-    .filter(isPinnedGroup)
-    .map((group) => {
-      const items = Array.isArray(group.items)
-        ? group.items
-            .filter((item) => item && typeof item.url === "string" && item.url.trim())
-            .map((item) => {
-              const candidate = item as { id?: string; url: string; title?: string; faviconUrl?: string };
-              const url = candidate.url.trim();
-              const id =
-                typeof candidate.id === "string" && candidate.id.trim()
-                  ? candidate.id
-                  : hashPinnedItemId(group.id, url);
-              return {
-                id,
-                url,
-                title: typeof candidate.title === "string" ? candidate.title : undefined,
-                faviconUrl: typeof candidate.faviconUrl === "string" ? candidate.faviconUrl : undefined,
-              };
-            })
-        : [];
-      return {
-        ...group,
-        order: typeof group.order === "number" ? group.order : undefined,
-        items,
-      };
-    });
+    .map((group) => normalizePinnedGroup(group, now))
+    .filter((group): group is PinnedGroup => Boolean(group));
 
   return {
     version: 1,
     groups,
-    defaultGroupId: undefined,
   };
 }
 
@@ -133,6 +153,10 @@ function normalizeLocalState(raw: unknown): LocalStateV1 {
     activeGroupId: typeof candidate.activeGroupId === "string" ? candidate.activeGroupId : undefined,
     deviceDefaultGroupId:
       typeof candidate.deviceDefaultGroupId === "string" ? candidate.deviceDefaultGroupId : undefined,
+    autoApplyDefaultOnNewWindow:
+      typeof candidate.autoApplyDefaultOnNewWindow === "boolean"
+        ? candidate.autoApplyDefaultOnNewWindow
+        : DEFAULT_LOCAL_STATE.autoApplyDefaultOnNewWindow,
     closePinnedToSuspend:
       typeof candidate.closePinnedToSuspend === "boolean"
         ? candidate.closePinnedToSuspend
@@ -153,10 +177,6 @@ function normalizePreferences(raw: unknown): PreferenceStateV1 {
       typeof candidate.closePinnedToSuspend === "boolean"
         ? candidate.closePinnedToSuspend
         : DEFAULT_PREFERENCES.closePinnedToSuspend,
-    newWindowBehavior:
-      candidate.newWindowBehavior === "default" || candidate.newWindowBehavior === "unmanaged"
-        ? candidate.newWindowBehavior
-        : DEFAULT_PREFERENCES.newWindowBehavior,
   };
 }
 
@@ -186,17 +206,6 @@ function normalizeSnapshotState(raw: unknown): SnapshotStateV1 {
 
 export function generateId(): string {
   return nanoid();
-}
-
-function pickFallbackDefault(groups: PinnedGroup[]): string | undefined {
-  if (groups.length === 0) return undefined;
-  const sorted = [...groups].sort((a, b) => {
-    const orderA = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
-    const orderB = typeof b.order === "number" ? b.order : Number.POSITIVE_INFINITY;
-    if (orderA !== orderB) return orderA - orderB;
-    return b.createdAt - a.createdAt;
-  });
-  return sorted[0]?.id;
 }
 
 export async function getSyncState(): Promise<SyncStateV1> {
@@ -292,7 +301,7 @@ export async function setDeviceDefaultGroupId(groupId?: string): Promise<LocalSt
 export async function ensureDefaultGroup(): Promise<SyncStateV1> {
   const state = await getSyncState();
   let nextState = state;
-  let needsWrite = false;
+  let needsWrite = syncStateNeedsWrite;
   const orderAssignments = new Map<string, number>();
 
   const groups = nextState.groups;

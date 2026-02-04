@@ -14,7 +14,6 @@ export type PinnedGroup = {
 export type SyncStateV1 = {
   version: 1;
   groups: PinnedGroup[];
-  defaultGroupId?: string;
 };
 
 export type LocalStateV1 = {
@@ -23,6 +22,7 @@ export type LocalStateV1 = {
   hasRemoteUpdate: boolean;
   activeGroupId?: string;
   deviceDefaultGroupId?: string;
+  autoApplyDefaultOnNewWindow?: boolean;
   closePinnedToSuspend?: boolean;
   windowGroupMap?: Record<string, string>;
   windowGroupLockMap?: Record<string, boolean>;
@@ -32,5 +32,4 @@ export type LocalStateV1 = {
 export type PreferenceStateV1 = {
   version: 1;
   closePinnedToSuspend: boolean;
-  newWindowBehavior: "default" | "unmanaged";
 };

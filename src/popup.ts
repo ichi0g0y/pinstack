@@ -26,7 +26,7 @@ const emptyState = document.querySelector<HTMLParagraphElement>("#emptyState");
 const statusEl = document.querySelector<HTMLParagraphElement>("#status");
 const syncNotice = document.querySelector<HTMLDivElement>("#syncNotice");
 const closeToSuspendToggle = document.querySelector<HTMLInputElement>("#closeToSuspend");
-const newWindowBehaviorSelect = document.querySelector<HTMLSelectElement>("#newWindowBehavior");
+const restoreDefaultToggle = document.querySelector<HTMLInputElement>("#restoreDefaultOnNewWindow");
 const unmanageWindowButton = document.querySelector<HTMLButtonElement>("#unmanageWindow");
 
 if (
@@ -37,7 +37,7 @@ if (
   !statusEl ||
   !syncNotice ||
   !closeToSuspendToggle ||
-  !newWindowBehaviorSelect ||
+  !restoreDefaultToggle ||
   !unmanageWindowButton
 ) {
   throw new Error("Popup UI is missing required elements.");
@@ -50,7 +50,7 @@ const emptyStateEl = emptyState;
 const statusElEl = statusEl;
 const syncNoticeEl = syncNotice;
 const closeToSuspendToggleEl = closeToSuspendToggle;
-const newWindowBehaviorSelectEl = newWindowBehaviorSelect;
+const restoreDefaultToggleEl = restoreDefaultToggle;
 const unmanageWindowButtonEl = unmanageWindowButton;
 let draggedGroupId: string | null = null;
 
@@ -155,17 +155,20 @@ function getNextGroupOrder(state: SyncStateV1): number {
   return (orders.length ? Math.max(...orders) : -1) + 1;
 }
 
-function sortGroups(state: SyncStateV1, defaultGroupId?: string): PinnedGroup[] {
+function sortGroups(state: SyncStateV1): PinnedGroup[] {
   return [...state.groups].sort((a, b) => {
-    const aDefault = Boolean(defaultGroupId && a.id === defaultGroupId);
-    const bDefault = Boolean(defaultGroupId && b.id === defaultGroupId);
-    if (aDefault && !bDefault) return -1;
-    if (!aDefault && bDefault) return 1;
     const orderA = typeof a.order === "number" ? a.order : Number.POSITIVE_INFINITY;
     const orderB = typeof b.order === "number" ? b.order : Number.POSITIVE_INFINITY;
     if (orderA !== orderB) return orderA - orderB;
     return b.createdAt - a.createdAt;
   });
+}
+
+function createBadge(label: string, variant?: "accent"): HTMLSpanElement {
+  const badge = document.createElement("span");
+  badge.className = variant ? `badge badge-${variant}` : "badge";
+  badge.textContent = label;
+  return badge;
 }
 
 async function clearRemoteNotice(): Promise<void> {
@@ -184,9 +187,9 @@ async function refreshSyncNotice(): Promise<void> {
 }
 
 async function renderPreferences(): Promise<void> {
-  const prefs = await getPreferences();
+  const [prefs, localState] = await Promise.all([getPreferences(), getLocalState()]);
   closeToSuspendToggleEl.checked = Boolean(prefs.closePinnedToSuspend);
-  newWindowBehaviorSelectEl.value = prefs.newWindowBehavior;
+  restoreDefaultToggleEl.checked = Boolean(localState.autoApplyDefaultOnNewWindow);
 }
 
 async function renderGroups(): Promise<void> {
@@ -208,13 +211,7 @@ async function renderGroups(): Promise<void> {
   if (localState.deviceDefaultGroupId && localState.deviceDefaultGroupId !== deviceDefaultGroupId) {
     await setDeviceDefaultGroupId(undefined);
   }
-
-  const activeGroupId =
-    localState.activeGroupId && state.groups.some((group) => group.id === localState.activeGroupId)
-      ? localState.activeGroupId
-      : deviceDefaultGroupId;
-
-  if (localState.activeGroupId && localState.activeGroupId !== activeGroupId) {
+  if (localState.activeGroupId && !state.groups.some((group) => group.id === localState.activeGroupId)) {
     await setActiveGroupId(undefined);
   }
 
@@ -222,7 +219,7 @@ async function renderGroups(): Promise<void> {
     typeof windowId === "number" ? localState.windowGroupMap?.[String(windowId)] : undefined;
   const currentGroupId =
     mappedGroupId && state.groups.some((group) => group.id === mappedGroupId) ? mappedGroupId : undefined;
-  const groups = sortGroups(state, deviceDefaultGroupId);
+  const groups = sortGroups(state);
 
   groupsListEl.innerHTML = "";
   if (groups.length === 0) {
@@ -238,13 +235,6 @@ async function renderGroups(): Promise<void> {
   });
 }
 
-function createBadge(label: string, variant?: "accent"): HTMLSpanElement {
-  const badge = document.createElement("span");
-  badge.className = variant ? `badge badge-${variant}` : "badge";
-  badge.textContent = label;
-  return badge;
-}
-
 function createGroupCard(
   group: PinnedGroup,
   { isDefault, isMapped, isUnmanaged }: { isDefault: boolean; isMapped: boolean; isUnmanaged: boolean }
@@ -254,7 +244,7 @@ function createGroupCard(
   card.dataset.id = group.id;
   card.dataset.default = isDefault ? "true" : "false";
   card.dataset.mapped = isMapped ? "true" : "false";
-  card.draggable = !isDefault;
+  card.draggable = true;
 
   const header = document.createElement("div");
   header.className = "group-header";
@@ -291,7 +281,6 @@ function createGroupCard(
 
   const badges = document.createElement("div");
   badges.className = "badges";
-
   if (isDefault) {
     badges.append(createBadge("Default"));
   }
@@ -489,7 +478,6 @@ async function saveGroupFromPinnedTabs(): Promise<void> {
   const nextState: SyncStateV1 = {
     version: 1,
     groups: [...state.groups, newGroup],
-    defaultGroupId: undefined,
   };
 
   await markLocalWrite();
@@ -531,7 +519,6 @@ async function deleteGroup(groupId: string): Promise<void> {
   const nextState: SyncStateV1 = {
     ...state,
     groups: nextGroups,
-    defaultGroupId: undefined,
   };
 
   await markLocalWrite();
@@ -540,7 +527,7 @@ async function deleteGroup(groupId: string): Promise<void> {
   if (localState.deviceDefaultGroupId === groupId) {
     let nextDefaultId: string | undefined;
     if (nextGroups.length > 0) {
-      const sorted = sortGroups({ ...state, groups: nextGroups }, undefined);
+      const sorted = sortGroups({ ...state, groups: nextGroups });
       nextDefaultId = sorted[0]?.id;
     }
     await setDeviceDefaultGroupId(nextDefaultId);
@@ -663,26 +650,15 @@ async function refreshPinnedTabs(groupId: string): Promise<void> {
 }
 
 async function persistGroupOrder(): Promise<void> {
-  const [state, localState] = await Promise.all([ensureDefaultGroup(), getLocalState()]);
-  const deviceDefaultGroupId =
-    localState.deviceDefaultGroupId && state.groups.some((group) => group.id === localState.deviceDefaultGroupId)
-      ? localState.deviceDefaultGroupId
-      : undefined;
+  const state = await ensureDefaultGroup();
   const cards = Array.from(groupsListEl.querySelectorAll<HTMLElement>(".group-card"));
-  const orderedIds = cards
-    .map((card) => ({
-      id: card.dataset.id,
-      isDefault: card.dataset.default === "true",
-    }))
-    .filter((item) => item.id && !item.isDefault)
-    .map((item) => item.id as string);
+  const orderedIds = cards.map((card) => card.dataset.id).filter((id): id is string => Boolean(id));
 
   if (orderedIds.length === 0) return;
 
   const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
   let changed = false;
   const nextGroups = state.groups.map((group) => {
-    if (deviceDefaultGroupId && group.id === deviceDefaultGroupId) return group;
     const order = orderMap.get(group.id);
     if (order === undefined || group.order === order) return group;
     changed = true;
@@ -790,7 +766,7 @@ groupsListEl.addEventListener("dragstart", (event) => {
   const target = event.target as HTMLElement;
   if (target.closest("button")) return;
   const card = target.closest<HTMLElement>(".group-card");
-  if (!card || card.dataset.default === "true") return;
+  if (!card) return;
   draggedGroupId = card.dataset.id ?? null;
   if (!draggedGroupId) return;
   card.classList.add("dragging");
@@ -804,7 +780,6 @@ groupsListEl.addEventListener("dragover", (event) => {
   const card = target.closest<HTMLElement>(".group-card");
   const dragging = groupsListEl.querySelector<HTMLElement>(".group-card.dragging");
   if (!card || !dragging || card === dragging) return;
-  if (card.dataset.default === "true") return;
   const rect = card.getBoundingClientRect();
   const shouldInsertAfter = event.clientY > rect.top + rect.height / 2;
   groupsListEl.insertBefore(dragging, shouldInsertAfter ? card.nextSibling : card);
@@ -830,9 +805,8 @@ closeToSuspendToggleEl.addEventListener("change", () => {
   void updatePreferences({ closePinnedToSuspend: closeToSuspendToggleEl.checked });
 });
 
-newWindowBehaviorSelectEl.addEventListener("change", () => {
-  const value = newWindowBehaviorSelectEl.value === "unmanaged" ? "unmanaged" : "default";
-  void updatePreferences({ newWindowBehavior: value });
+restoreDefaultToggleEl.addEventListener("change", () => {
+  void updateLocalState({ autoApplyDefaultOnNewWindow: restoreDefaultToggleEl.checked });
 });
 
 unmanageWindowButtonEl.addEventListener("click", () => {

@@ -37,13 +37,19 @@
         <div class="panel-title">
           <h2>Preferences</h2>
         </div>
-        <label class="pref-row" for="newWindowBehavior">
-          <span class="pref-label">New window behavior</span>
-          <select id="newWindowBehavior">
-            <option value="default">Apply default group</option>
-            <option value="unmanaged">Leave unmanaged</option>
-          </select>
-        </label>
+        <div class="toggle-row">
+          <div>
+            <p class="toggle-title">
+              Auto-restore default group on new windows
+              <span class="badge badge-accent">Experimental</span>
+            </p>
+            <p class="toggle-note">When enabled, new windows start with the default group.</p>
+          </div>
+          <label class="switch">
+            <input id="restoreDefaultOnNewWindow" type="checkbox" />
+            <span class="slider" aria-hidden="true"></span>
+          </label>
+        </div>
         <div class="toggle-row">
           <div>
             <p class="toggle-title">Close to suspend</p>
